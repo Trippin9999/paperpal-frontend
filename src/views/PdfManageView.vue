@@ -138,6 +138,12 @@ async function handleDelete() {
 
 function useFile(filename) {
   targetFilename.value = filename
+  renameOldFilename.value = filename
+}
+
+async function handleReadFromList(filename) {
+  targetFilename.value = filename
+  await handleRead()
 }
 
 onMounted(async () => {
@@ -155,126 +161,198 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="page">
-    <section class="hero card">
-      <h1>PDF Manage</h1>
-      <p>Upload, read content, rename, and delete PDF files through your Spring Boot backend.</p>
-      <p class="hint">API base URL: {{ apiBaseUrl }}</p>
-    </section>
+  <main class="workspace">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Paperpal</p>
+        <h1>論文管理與閱讀</h1>
+        <p class="subtitle">先上傳論文檔案，再在右側閱讀區查看內容。整體流程維持簡單清晰。</p>
+      </div>
+      <p class="api">API: {{ apiBaseUrl }}</p>
+    </header>
 
-    <section class="grid">
-      <article class="card">
-        <h2>Upload PDF</h2>
-        <input type="file" accept="application/pdf,.pdf" @change="onFileChange" />
-        <button :disabled="working" @click="handleUpload">Upload</button>
-      </article>
+    <section class="layout">
+      <aside class="control-panel">
+        <article class="panel-card">
+          <h2>上傳 PDF</h2>
+          <input type="file" accept="application/pdf,.pdf" @change="onFileChange" />
+          <button class="upload-btn" :disabled="working" @click="handleUpload">Upload</button>
+        </article>
 
-      <article class="card">
-        <h2>Read / Delete</h2>
-        <input v-model="targetFilename" placeholder="example.pdf" />
-        <div class="actions">
-          <button :disabled="working" @click="handleRead">Read</button>
+        <article class="panel-card">
+          <h2>檔案刪除</h2>
+          <input v-model="targetFilename" placeholder="example.pdf" />
           <button class="danger" :disabled="working" @click="handleDelete">Delete</button>
+        </article>
+
+        <article class="panel-card">
+          <h2>重新命名</h2>
+          <input v-model="renameOldFilename" placeholder="old-name.pdf" />
+          <input v-model="renameNewFilename" placeholder="new-name.pdf" />
+          <button class="rename-btn" :disabled="working" @click="handleRename">Rename</button>
+        </article>
+
+        <article class="panel-card list-card">
+          <div class="list-head">
+            <div class="list-title">
+              <h2>我的論文</h2>
+              <p class="hint">{{ files.length }} files</p>
+            </div>
+            <button class="secondary list-read" :disabled="working || !targetFilename.trim()" @click="handleRead">
+              讀取目前檔案
+            </button>
+          </div>
+          <p v-if="fileListLoading" class="hint">Loading files...</p>
+          <ul v-if="files.length">
+            <li v-for="file in files" :key="file">
+              <div class="file-row">
+                <button class="file-link" @click="useFile(file)">{{ file }}</button>
+                <button class="mini-read" :disabled="working" @click="handleReadFromList(file)">Read</button>
+              </div>
+            </li>
+          </ul>
+          <p v-else class="hint">No uploaded PDFs found.</p>
+        </article>
+
+        <section v-if="message" class="notice success">{{ message }}</section>
+        <section v-if="errorMessage" class="notice error">{{ errorMessage }}</section>
+      </aside>
+
+      <section class="reader-panel">
+        <div class="reader-head">
+          <h2>論文閱讀區</h2>
         </div>
-      </article>
 
-      <article class="card">
-        <h2>Rename PDF</h2>
-        <input v-model="renameOldFilename" placeholder="old-name.pdf" />
-        <input v-model="renameNewFilename" placeholder="new-name.pdf" />
-        <button :disabled="working" @click="handleRename">Rename</button>
-      </article>
+        <div class="reader-shell">
+          <div class="reader-meta">
+            <span>目前檔案</span>
+            <strong>{{ targetFilename || '尚未選擇' }}</strong>
+          </div>
 
-      <article class="card">
-        <h2>All Documents</h2>
-        <p class="hint">Total: {{ files.length }}</p>
-        <p v-if="fileListLoading" class="hint">Loading files...</p>
-        <ul v-if="files.length">
-          <li v-for="file in files" :key="file">
-            <button class="link" @click="useFile(file)">{{ file }}</button>
-          </li>
-        </ul>
-        <p v-else>No uploaded PDFs found.</p>
-      </article>
-    </section>
-
-    <section v-if="message" class="notice success">{{ message }}</section>
-    <section v-if="errorMessage" class="notice error">{{ errorMessage }}</section>
-
-    <section class="card content-card">
-      <h2>PDF Text Content</h2>
-      <pre>{{ pdfContent || 'No content loaded yet.' }}</pre>
+          <pre v-if="pdfContent">{{ pdfContent }}</pre>
+          <div v-else class="placeholder">
+            <h3>已預留閱讀空間</h3>
+            <p>這裡可放置論文文字內容、段落導覽、或後續 PDF Viewer 元件。</p>
+            <p>請先從左側上傳或選擇檔案，再按 Read 載入內容。</p>
+          </div>
+        </div>
+      </section>
     </section>
   </main>
 </template>
 
 <style scoped>
-.page {
+:root {
+  --bg: #f6f7f3;
+  --panel: #ffffff;
+  --panel-muted: #f3f5ef;
+  --ink: #1b2528;
+  --ink-soft: #617175;
+  --line: #d9dfd3;
+  --accent: #2c6e63;
+  --accent-strong: #1e574e;
+  --danger: #b43636;
+}
+
+.workspace {
   min-height: 100vh;
   background:
-    radial-gradient(circle at 10% 20%, #f8ecd8 0%, transparent 40%),
-    radial-gradient(circle at 90% 10%, #dff0ea 0%, transparent 35%),
-    linear-gradient(135deg, #f5f3ed 0%, #e5e9ec 100%);
-  color: #1f2a31;
-  padding: 2rem;
-  font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+    radial-gradient(circle at 8% 12%, #dfe9d9 0%, transparent 34%),
+    radial-gradient(circle at 94% 88%, #dce9e5 0%, transparent 36%),
+    var(--bg);
+  color: var(--ink);
+  padding: clamp(1rem, 2.2vw, 2rem);
+  font-family: 'Noto Sans TC', 'Avenir Next', 'Segoe UI', sans-serif;
 }
 
-.hero h1 {
-  margin: 0 0 0.3rem;
-  font-size: clamp(2rem, 4vw, 3rem);
-}
-
-.hero p {
-  margin: 0.4rem 0;
-}
-
-.hint {
-  font-size: 0.92rem;
-  opacity: 0.75;
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
   gap: 1rem;
-  margin-top: 1rem;
+  padding: 0.6rem 0.2rem 1rem;
 }
 
-.card {
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(31, 42, 49, 0.08);
+.eyebrow {
+  margin: 0;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+
+h1 {
+  margin: 0.2rem 0 0.45rem;
+  font-family: 'Noto Serif TC', 'Palatino Linotype', serif;
+  font-size: clamp(1.45rem, 2.5vw, 2.3rem);
+  font-weight: 600;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--ink-soft);
+  max-width: 56ch;
+}
+
+.api {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.45rem 0.8rem;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.control-panel {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.panel-card,
+.reader-shell {
+  background: var(--panel);
+  border: 1px solid var(--line);
   border-radius: 14px;
-  padding: 1rem;
-  box-shadow: 0 8px 24px rgba(31, 42, 49, 0.08);
+  padding: 0.9rem;
+  box-shadow: 0 10px 28px rgba(31, 46, 44, 0.06);
 }
 
-.card h2 {
-  margin-top: 0;
-  font-size: 1.1rem;
+.panel-card h2,
+.reader-head h2 {
+  margin: 0 0 0.65rem;
+  font-size: 1rem;
 }
 
 input {
   width: 100%;
-  margin: 0.4rem 0;
-  padding: 0.55rem 0.7rem;
+  margin: 0.35rem 0;
+  padding: 0.56rem 0.68rem;
+  border: 1px solid #ccd6ce;
   border-radius: 8px;
-  border: 1px solid #cfd6dc;
+  background: #fff;
   box-sizing: border-box;
 }
 
 button {
-  margin-top: 0.45rem;
+  margin-top: 0.4rem;
   border: 0;
   border-radius: 8px;
-  padding: 0.55rem 0.8rem;
-  background: #0f766e;
+  padding: 0.56rem 0.78rem;
+  background: var(--accent);
   color: #fff;
   cursor: pointer;
 }
 
 button:hover {
-  background: #0b5f59;
+  background: var(--accent-strong);
 }
 
 button:disabled {
@@ -282,60 +360,241 @@ button:disabled {
   cursor: not-allowed;
 }
 
-.actions {
-  display: flex;
-  gap: 0.6rem;
+.secondary {
+  margin-top: 0;
+  background: #3e4f53;
+}
+
+.secondary:hover {
+  background: #2f4044;
 }
 
 .danger {
-  background: #b91c1c;
+  background: var(--danger);
 }
 
 .danger:hover {
-  background: #991b1b;
+  background: #982f2f;
 }
 
-.link {
+.actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.list-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+}
+
+.upload-btn,
+.rename-btn,
+.danger {
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.upload-btn {
+  background: #144a8a;
+}
+
+.upload-btn:hover {
+  background: #103e74;
+}
+
+.rename-btn {
+  background: #0f6a58;
+}
+
+.rename-btn:hover {
+  background: #0b5648;
+}
+
+.danger {
+  background: #a21d1d;
+}
+
+.danger:hover {
+  background: #841616;
+}
+
+.list-read {
+  margin-top: 0;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  padding: 0.38rem 0.62rem;
+}
+
+.hint {
   margin: 0;
-  padding: 0;
-  background: none;
-  color: #0f766e;
-  text-decoration: underline;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
 }
 
 ul {
-  margin: 0;
+  margin: 0.35rem 0 0;
   padding-left: 1rem;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.file-link {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #245f56;
+  text-decoration: underline;
+  font-size: 0.92rem;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.mini-read {
+  margin-top: 0;
+  padding: 0.34rem 0.58rem;
+  font-size: 0.8rem;
 }
 
 .notice {
-  margin-top: 1rem;
   border-radius: 10px;
-  padding: 0.8rem 1rem;
+  padding: 0.72rem 0.85rem;
+  font-size: 0.9rem;
   font-weight: 600;
 }
 
 .success {
-  background: #dcfce7;
-  color: #166534;
+  background: #e7f7e9;
+  color: #1d5f35;
+  border: 1px solid #b9e5c0;
 }
 
 .error {
-  background: #fee2e2;
-  color: #991b1b;
+  background: #fbe8e8;
+  color: #922f2f;
+  border: 1px solid #efc5c5;
 }
 
-.content-card {
-  margin-top: 1rem;
+.reader-panel {
+  min-height: 72vh;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.reader-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.15rem 0.2rem;
+}
+
+.reader-shell {
+  background: linear-gradient(180deg, #ffffff 0%, var(--panel-muted) 100%);
+  min-height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.7rem;
+}
+
+.reader-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.7rem;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.55rem;
+}
+
+.reader-meta strong {
+  color: var(--ink);
+  max-width: 70%;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 pre {
+  margin: 0;
   white-space: pre-wrap;
-  max-height: 320px;
   overflow: auto;
-  background: #101828;
-  color: #f8fafc;
+  max-height: 62vh;
+  background: #101a1b;
+  color: #e8f2ef;
   border-radius: 10px;
   padding: 1rem;
+  line-height: 1.55;
+}
+
+.placeholder {
+  border: 1px dashed #b8c5ba;
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 10px;
+  padding: 1rem;
+  color: #425457;
+}
+
+.placeholder h3 {
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+}
+
+.placeholder p {
+  margin: 0.35rem 0;
+  line-height: 1.6;
+}
+
+@media (max-width: 980px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .reader-panel {
+    min-height: 56vh;
+  }
+
+  .api {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 620px) {
+  .page-header {
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .reader-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .actions {
+    flex-direction: column;
+  }
+
+  .list-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 </style>
