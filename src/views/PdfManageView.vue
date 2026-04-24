@@ -8,11 +8,11 @@ const message = ref('')
 const errorMessage = ref('')
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
 
-const targetFilename = ref('')
-const renameOldFilename = ref('')
+const selectedDocumentId = ref(null)
+const selectedDocumentName = ref('')
 const renameNewFilename = ref('')
 const pdfContent = ref('')
-const files = ref([])
+const documents = ref([])
 const fileListLoading = ref(false)
 let pollTimer = null
 
@@ -26,6 +26,11 @@ function setError(err) {
   message.value = ''
 }
 
+function useFile(document) {
+  selectedDocumentId.value = document?.id ?? null
+  selectedDocumentName.value = document?.filename ?? ''
+}
+
 async function refreshFileList({ silent = false } = {}) {
   if (!silent) {
     fileListLoading.value = true
@@ -33,7 +38,14 @@ async function refreshFileList({ silent = false } = {}) {
 
   try {
     const result = await listPdfs()
-    files.value = Array.isArray(result.files) ? result.files : []
+    documents.value = Array.isArray(result.documents) ? result.documents : []
+
+    if (selectedDocumentId.value !== null) {
+      const selectedById = documents.value.find((item) => item.id === selectedDocumentId.value)
+      if (selectedById) {
+        selectedDocumentName.value = selectedById.filename
+      }
+    }
   } catch (error) {
     if (!silent) {
       setError(error)
@@ -60,9 +72,17 @@ async function handleUpload() {
   try {
     const result = await uploadPdf(selectedFile.value)
     setSuccess(result.message || 'Upload successful.')
-    targetFilename.value = result.filename || ''
+    selectedDocumentName.value = result.filename || ''
+    selectedDocumentId.value = null
     selectedFile.value = null
     await refreshFileList({ silent: true })
+
+    const selectedByFilename = documents.value.find(
+      (item) => item.filename === selectedDocumentName.value,
+    )
+    if (selectedByFilename) {
+      useFile(selectedByFilename)
+    }
   } catch (error) {
     setError(error)
   } finally {
@@ -71,14 +91,14 @@ async function handleUpload() {
 }
 
 async function handleRead() {
-  if (!targetFilename.value.trim()) {
-    setError('Please enter a filename to read.')
+  if (!selectedDocumentName.value.trim()) {
+    setError('Please select a filename to read.')
     return
   }
 
   working.value = true
   try {
-    const result = await readPdf(targetFilename.value.trim())
+    const result = await readPdf(selectedDocumentName.value.trim())
     pdfContent.value = result.content || ''
     setSuccess(result.message || 'Read successful.')
   } catch (error) {
@@ -89,11 +109,15 @@ async function handleRead() {
 }
 
 async function handleRename() {
-  const oldName = renameOldFilename.value.trim()
+  const oldName = selectedDocumentName.value.trim()
   const newName = renameNewFilename.value.trim()
 
-  if (!oldName || !newName) {
-    setError('Please fill in both old filename and new filename.')
+  if (!oldName) {
+    setError('Please select a document first.')
+    return
+  }
+  if (!newName) {
+    setError('Please enter a new filename.')
     return
   }
 
@@ -101,9 +125,35 @@ async function handleRename() {
   try {
     const result = await renamePdf(oldName, newName)
     setSuccess(result.message || 'Rename successful.')
-    targetFilename.value = result.newFilename || newName
 
-    renameOldFilename.value = ''
+    selectedDocumentName.value = result.newFilename || newName
+    renameNewFilename.value = ''
+    await refreshFileList({ silent: true })
+
+    if (selectedDocumentId.value !== null) {
+      const selectedById = documents.value.find((item) => item.id === selectedDocumentId.value)
+      if (selectedById) {
+        selectedDocumentName.value = selectedById.filename
+      }
+    }
+  } catch (error) {
+    setError(error)
+  } finally {
+    working.value = false
+  }
+}
+
+async function handleDelete() {
+  const fileId = selectedDocumentId.value
+
+  working.value = true
+  try {
+    const result = await deletePdf(fileId)
+    setSuccess(result.message || 'Delete successful.')
+
+    selectedDocumentId.value = null
+    selectedDocumentName.value = ''
+    pdfContent.value = ''
     renameNewFilename.value = ''
     await refreshFileList({ silent: true })
   } catch (error) {
@@ -113,36 +163,8 @@ async function handleRename() {
   }
 }
 
-async function handleDelete() {
-  const filename = targetFilename.value.trim()
-  if (!filename) {
-    setError('Please enter a filename to delete.')
-    return
-  }
-
-  working.value = true
-  try {
-    const result = await deletePdf(filename)
-    setSuccess(result.message || 'Delete successful.')
-    if (targetFilename.value.trim() === filename) {
-      targetFilename.value = ''
-    }
-    pdfContent.value = ''
-    await refreshFileList({ silent: true })
-  } catch (error) {
-    setError(error)
-  } finally {
-    working.value = false
-  }
-}
-
-function useFile(filename) {
-  targetFilename.value = filename
-  renameOldFilename.value = filename
-}
-
-async function handleReadFromList(filename) {
-  targetFilename.value = filename
+async function handleReadFromList(document) {
+  useFile(document)
   await handleRead()
 }
 
@@ -181,33 +203,56 @@ onBeforeUnmount(() => {
 
         <article class="panel-card">
           <h2>檔案刪除</h2>
-          <input v-model="targetFilename" placeholder="example.pdf" />
-          <button class="danger" :disabled="working" @click="handleDelete">Delete</button>
+          <p class="hint">目標檔案：{{ selectedDocumentName || '尚未選擇' }}</p>
+          <button
+            class="danger"
+            :disabled="working || !selectedDocumentName.trim()"
+            @click="handleDelete"
+          >
+            Delete
+          </button>
         </article>
 
         <article class="panel-card">
           <h2>重新命名</h2>
-          <input v-model="renameOldFilename" placeholder="old-name.pdf" />
+          <p class="hint">目標檔案：{{ selectedDocumentName || '尚未選擇' }}</p>
           <input v-model="renameNewFilename" placeholder="new-name.pdf" />
-          <button class="rename-btn" :disabled="working" @click="handleRename">Rename</button>
+          <button
+            class="rename-btn"
+            :disabled="working || !selectedDocumentName.trim()"
+            @click="handleRename"
+          >
+            Rename
+          </button>
         </article>
 
         <article class="panel-card list-card">
           <div class="list-head">
             <div class="list-title">
               <h2>我的論文</h2>
-              <p class="hint">{{ files.length }} files</p>
+              <p class="hint">{{ documents.length }} files</p>
             </div>
-            <button class="secondary list-read" :disabled="working || !targetFilename.trim()" @click="handleRead">
+            <button
+              class="secondary list-read"
+              :disabled="working || !selectedDocumentName.trim()"
+              @click="handleRead"
+            >
               讀取目前檔案
             </button>
           </div>
           <p v-if="fileListLoading" class="hint">Loading files...</p>
-          <ul v-if="files.length">
-            <li v-for="file in files" :key="file">
+          <ul v-if="documents.length">
+            <li
+              v-for="document in documents"
+              :key="`${document.id ?? 'none'}-${document.filename}`"
+            >
               <div class="file-row">
-                <button class="file-link" @click="useFile(file)">{{ file }}</button>
-                <button class="mini-read" :disabled="working" @click="handleReadFromList(file)">Read</button>
+                <button class="file-link" @click="useFile(document)">
+                  {{ document.filename }}
+                </button>
+                <button class="mini-read" :disabled="working" @click="handleReadFromList(document)">
+                  Read
+                </button>
               </div>
             </li>
           </ul>
@@ -226,7 +271,7 @@ onBeforeUnmount(() => {
         <div class="reader-shell">
           <div class="reader-meta">
             <span>目前檔案</span>
-            <strong>{{ targetFilename || '尚未選擇' }}</strong>
+            <strong>{{ selectedDocumentName || '尚未選擇' }}</strong>
           </div>
 
           <pre v-if="pdfContent">{{ pdfContent }}</pre>
@@ -258,8 +303,7 @@ onBeforeUnmount(() => {
   min-height: 100vh;
   background:
     radial-gradient(circle at 8% 12%, #dfe9d9 0%, transparent 34%),
-    radial-gradient(circle at 94% 88%, #dce9e5 0%, transparent 36%),
-    var(--bg);
+    radial-gradient(circle at 94% 88%, #dce9e5 0%, transparent 36%), var(--bg);
   color: var(--ink);
   padding: clamp(1rem, 2.2vw, 2rem);
   font-family: 'Noto Sans TC', 'Avenir Next', 'Segoe UI', sans-serif;

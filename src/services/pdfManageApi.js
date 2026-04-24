@@ -38,8 +38,8 @@ export async function renamePdf(oldFilename, newFilename) {
   return parseResponse(response)
 }
 
-export async function deletePdf(filename) {
-  const params = new URLSearchParams({ filename })
+export async function deletePdf(fileId) {
+  const params = new URLSearchParams({ fileId })
   const response = await fetch(`${API_BASE_URL}/api/pdf/delete?${params.toString()}`, {
     method: 'DELETE',
   })
@@ -49,5 +49,21 @@ export async function deletePdf(filename) {
 
 export async function listPdfs() {
   const response = await fetch(`${API_BASE_URL}/api/pdf/list`)
-  return parseResponse(response)
+  const data = await parseResponse(response)
+
+  const documents = Array.isArray(data.documents)
+    ? data.documents
+        .map((item) => ({
+          id: item?.id ?? null,
+          filename: item?.filename ?? '',
+        }))
+        .filter((item) => item.filename)
+    : Array.isArray(data.files)
+      ? data.files.map((filename) => ({ id: null, filename }))
+      : []
+
+  return {
+    ...data,
+    documents,
+  }
 }
