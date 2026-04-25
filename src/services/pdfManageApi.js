@@ -23,8 +23,8 @@ export async function uploadPdf(file) {
   return parseResponse(response)
 }
 
-export async function readPdf(filename) {
-  const params = new URLSearchParams({ filename })
+export async function readPdf(documentId) {
+  const params = new URLSearchParams({ documentId })
   const response = await fetch(`${API_BASE_URL}/api/pdf/read?${params.toString()}`)
   return parseResponse(response)
 }

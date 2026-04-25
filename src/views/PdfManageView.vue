@@ -91,14 +91,14 @@ async function handleUpload() {
 }
 
 async function handleRead() {
-  if (!selectedDocumentName.value.trim()) {
+  if (!selectedDocumentId.value) {
     setError('Please select a filename to read.')
     return
   }
 
   working.value = true
   try {
-    const result = await readPdf(selectedDocumentName.value.trim())
+    const result = await readPdf(selectedDocumentId.value)
     pdfContent.value = result.content || ''
     setSuccess(result.message || 'Read successful.')
   } catch (error) {
