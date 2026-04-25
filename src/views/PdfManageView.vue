@@ -109,10 +109,10 @@ async function handleRead() {
 }
 
 async function handleRename() {
-  const oldName = selectedDocumentName.value.trim()
+  const documentId = selectedDocumentId.value
   const newName = renameNewFilename.value.trim()
 
-  if (!oldName) {
+  if (!documentId) {
     setError('Please select a document first.')
     return
   }
@@ -123,7 +123,7 @@ async function handleRename() {
 
   working.value = true
   try {
-    const result = await renamePdf(oldName, newName)
+    const result = await renamePdf(documentId, newName)
     setSuccess(result.message || 'Rename successful.')
 
     selectedDocumentName.value = result.newFilename || newName

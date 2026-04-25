@@ -29,8 +29,8 @@ export async function readPdf(filename) {
   return parseResponse(response)
 }
 
-export async function renamePdf(oldFilename, newFilename) {
-  const params = new URLSearchParams({ oldFilename, newFilename })
+export async function renamePdf(documentId, newFilename) {
+  const params = new URLSearchParams({ documentId, newFilename })
   const response = await fetch(`${API_BASE_URL}/api/pdf/update?${params.toString()}`, {
     method: 'PUT',
   })
