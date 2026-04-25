@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { deletePdf, listPdfs, readPdf, renamePdf, uploadPdf } from '@/services/pdfManageApi'
 
 const selectedFile = ref(null)
+const fileInputRef = ref(null)
 const working = ref(false)
 const message = ref('')
 const errorMessage = ref('')
@@ -73,8 +74,11 @@ async function handleUpload() {
     const result = await uploadPdf(selectedFile.value)
     setSuccess(result.message || 'Upload successful.')
     selectedDocumentName.value = result.filename || ''
-    selectedDocumentId.value = null
+    selectedDocumentId.value = result.documentId || null
     selectedFile.value = null
+    if (fileInputRef.value) {
+      fileInputRef.value.value = ''
+    }
     await refreshFileList({ silent: true })
 
     const selectedByFilename = documents.value.find(
@@ -197,7 +201,7 @@ onBeforeUnmount(() => {
       <aside class="control-panel">
         <article class="panel-card">
           <h2>上傳 PDF</h2>
-          <input type="file" accept="application/pdf,.pdf" @change="onFileChange" />
+          <input ref="fileInputRef" type="file" accept="application/pdf,.pdf" @change="onFileChange" />
           <button class="upload-btn" :disabled="working" @click="handleUpload">Upload</button>
         </article>
 
