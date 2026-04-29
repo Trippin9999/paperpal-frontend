@@ -1,5 +1,18 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
 
+function normalizeSegments(segmentList) {
+  if (!Array.isArray(segmentList)) {
+    return []
+  }
+
+  return segmentList
+    .map((segment) => ({
+      segmentId: segment?.segmentId ?? segment?.id ?? null,
+      content: segment?.content ?? '',
+    }))
+    .filter((segment) => segment.content)
+}
+
 async function parseResponse(response) {
   const data = await response.json().catch(() => ({}))
 
@@ -26,7 +39,16 @@ export async function uploadPdf(file) {
 export async function readPdf(documentId) {
   const params = new URLSearchParams({ documentId })
   const response = await fetch(`${API_BASE_URL}/api/pdf/read?${params.toString()}`)
-  return parseResponse(response)
+  const data = await parseResponse(response)
+  const segmentList = normalizeSegments(data.segmentList)
+  const content =
+    data.content ?? (segmentList.length ? segmentList.map((segment) => segment.content).join('\n\n') : '')
+
+  return {
+    ...data,
+    segmentList,
+    content,
+  }
 }
 
 export async function renamePdf(documentId, newFilename) {
@@ -54,7 +76,7 @@ export async function listPdfs() {
   const documents = Array.isArray(data.documents)
     ? data.documents
         .map((item) => ({
-          id: item?.id ?? null,
+          id: item?.id != null ? String(item.id) : null,
           filename: item?.filename ?? '',
         }))
         .filter((item) => item.filename)

@@ -13,6 +13,7 @@ const selectedDocumentId = ref(null)
 const selectedDocumentName = ref('')
 const renameNewFilename = ref('')
 const pdfContent = ref('')
+const pdfSegments = ref([])
 const documents = ref([])
 const fileListLoading = ref(false)
 let pollTimer = null
@@ -74,7 +75,7 @@ async function handleUpload() {
     const result = await uploadPdf(selectedFile.value)
     setSuccess(result.message || 'Upload successful.')
     selectedDocumentName.value = result.filename || ''
-    selectedDocumentId.value = result.documentId || null
+    selectedDocumentId.value = result.documentId != null ? String(result.documentId) : null
     selectedFile.value = null
     if (fileInputRef.value) {
       fileInputRef.value.value = ''
@@ -103,6 +104,7 @@ async function handleRead() {
   working.value = true
   try {
     const result = await readPdf(selectedDocumentId.value)
+    pdfSegments.value = Array.isArray(result.segmentList) ? result.segmentList : []
     pdfContent.value = result.content || ''
     setSuccess(result.message || 'Read successful.')
   } catch (error) {
@@ -158,6 +160,7 @@ async function handleDelete() {
     selectedDocumentId.value = null
     selectedDocumentName.value = ''
     pdfContent.value = ''
+    pdfSegments.value = []
     renameNewFilename.value = ''
     await refreshFileList({ silent: true })
   } catch (error) {
@@ -278,7 +281,12 @@ onBeforeUnmount(() => {
             <strong>{{ selectedDocumentName || '尚未選擇' }}</strong>
           </div>
 
-          <pre v-if="pdfContent">{{ pdfContent }}</pre>
+          <pre v-if="!pdfSegments.length && pdfContent">{{ pdfContent }}</pre>
+          <ol v-else-if="pdfSegments.length" class="segment-list">
+            <li v-for="segment in pdfSegments" :key="segment.segmentId ?? segment.content">
+              {{ segment.content }}
+            </li>
+          </ol>
           <div v-else class="placeholder">
             <h3>已預留閱讀空間</h3>
             <p>這裡可放置論文文字內容、段落導覽、或後續 PDF Viewer 元件。</p>
@@ -588,6 +596,23 @@ pre {
   border-radius: 10px;
   padding: 1rem;
   line-height: 1.55;
+}
+
+.segment-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  max-height: 62vh;
+  overflow: auto;
+  color: #1f2a2c;
+  line-height: 1.6;
+}
+
+.segment-list li {
+  margin-bottom: 0.75rem;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.8rem 0.9rem;
 }
 
 .placeholder {
