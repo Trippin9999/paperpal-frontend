@@ -282,11 +282,11 @@ onBeforeUnmount(() => {
           </div>
 
           <pre v-if="!pdfSegments.length && pdfContent">{{ pdfContent }}</pre>
-          <ol v-else-if="pdfSegments.length" class="segment-list">
+          <ul v-else-if="pdfSegments.length" class="segment-list">
             <li v-for="segment in pdfSegments" :key="segment.segmentId ?? segment.content">
               {{ segment.content }}
             </li>
-          </ol>
+          </ul>
           <div v-else class="placeholder">
             <h3>已預留閱讀空間</h3>
             <p>這裡可放置論文文字內容、段落導覽、或後續 PDF Viewer 元件。</p>
@@ -601,6 +601,7 @@ pre {
 .segment-list {
   margin: 0;
   padding-left: 1.2rem;
+  list-style: none; /* remove default numbering/bullets */
   max-height: 62vh;
   overflow: auto;
   color: #1f2a2c;
