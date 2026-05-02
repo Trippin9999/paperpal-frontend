@@ -1,6 +1,13 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { deletePdf, listPdfs, readPdf, renamePdf, uploadPdf } from '@/services/pdfManageApi'
+import {
+  createBookmark,
+  deletePdf,
+  listPdfs,
+  readPdf,
+  renamePdf,
+  uploadPdf,
+} from '@/services/pdfManageApi'
 
 const selectedFile = ref(null)
 const fileInputRef = ref(null)
@@ -246,6 +253,27 @@ async function copyPositionJson() {
   }
 }
 
+async function handleCreateBookmark() {
+  if (!selectedDocumentId.value) {
+    setError('請先選擇檔案。')
+    return
+  }
+  if (!selectedPosition.value) {
+    setError('請先在閱讀區選取文字。')
+    return
+  }
+
+  working.value = true
+  try {
+    const result = await createBookmark(selectedDocumentId.value, selectedPosition.value)
+    setSuccess(result.message || 'Bookmark 建立成功')
+  } catch (error) {
+    setError(error)
+  } finally {
+    working.value = false
+  }
+}
+
 async function handleReadFromList(document) {
   useFile(document)
   await handleRead()
@@ -380,14 +408,24 @@ onBeforeUnmount(() => {
         <section class="selection-panel">
           <div class="selection-head">
             <h3>選取位置 JSON</h3>
-            <button
-              class="secondary"
-              :disabled="!selectedPositionJson"
-              type="button"
-              @click="copyPositionJson"
-            >
-              Copy
-            </button>
+            <div class="selection-actions">
+              <button
+                class="secondary"
+                :disabled="!selectedPositionJson"
+                type="button"
+                @click="copyPositionJson"
+              >
+                Copy
+              </button>
+              <button
+                class="primary"
+                :disabled="working || !selectedPosition || !selectedDocumentId"
+                type="button"
+                @click="handleCreateBookmark"
+              >
+                建立 Bookmark
+              </button>
+            </div>
           </div>
           <pre v-if="selectedPositionJson" class="selection-json">{{ selectedPositionJson }}</pre>
           <p v-else class="hint">在閱讀區選取一段文字，這裡會產生 position JSON。</p>
@@ -497,6 +535,12 @@ h1 {
   margin-bottom: 0.65rem;
 }
 
+.selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .panel-card h2,
 .reader-head h2 {
   margin: 0 0 0.65rem;
@@ -544,6 +588,15 @@ button:disabled {
 
 .secondary:hover {
   background: #2f4044;
+}
+
+.primary {
+  margin-top: 0;
+  background: #225b9a;
+}
+
+.primary:hover {
+  background: #1b4b80;
 }
 
 .danger {

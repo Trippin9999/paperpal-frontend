@@ -89,3 +89,16 @@ export async function listPdfs() {
     documents,
   }
 }
+
+export async function createBookmark(documentId, position) {
+  const params = new URLSearchParams({ documentId })
+  const response = await fetch(`${API_BASE_URL}/api/content/createBookmark?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(position),
+  })
+
+  return parseResponse(response)
+}
