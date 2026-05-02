@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { deletePdf, listPdfs, readPdf, renamePdf, uploadPdf } from '@/services/pdfManageApi'
 
 const selectedFile = ref(null)
@@ -16,7 +16,12 @@ const pdfContent = ref('')
 const pdfSegments = ref([])
 const documents = ref([])
 const fileListLoading = ref(false)
+const selectedPosition = ref(null)
 let pollTimer = null
+
+const selectedPositionJson = computed(() =>
+  selectedPosition.value ? JSON.stringify(selectedPosition.value, null, 2) : '',
+)
 
 function setSuccess(msg) {
   message.value = msg
@@ -106,6 +111,7 @@ async function handleRead() {
     const result = await readPdf(selectedDocumentId.value)
     pdfSegments.value = Array.isArray(result.segmentList) ? result.segmentList : []
     pdfContent.value = result.content || ''
+    selectedPosition.value = null
     setSuccess(result.message || 'Read successful.')
   } catch (error) {
     setError(error)
@@ -162,11 +168,81 @@ async function handleDelete() {
     pdfContent.value = ''
     pdfSegments.value = []
     renameNewFilename.value = ''
+    selectedPosition.value = null
     await refreshFileList({ silent: true })
   } catch (error) {
     setError(error)
   } finally {
     working.value = false
+  }
+}
+
+function getSegmentElement(node) {
+  if (!node) {
+    return null
+  }
+
+  const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node
+  return element?.closest?.('[data-segment-id]') || null
+}
+
+function buildPositionFromSelection() {
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) {
+    return null
+  }
+
+  const selectedText = selection.toString()
+  if (!selectedText.trim()) {
+    return null
+  }
+
+  const range = selection.getRangeAt(0)
+  const startSegment = getSegmentElement(range.startContainer)
+  const endSegment = getSegmentElement(range.endContainer)
+
+  if (!startSegment || startSegment !== endSegment) {
+    setError('請在同一段落內選取文字。')
+    return null
+  }
+
+  const segmentIdRaw = startSegment.dataset.segmentId
+  const segmentId = segmentIdRaw != null && segmentIdRaw !== '' ? Number(segmentIdRaw) : null
+
+  const preRange = document.createRange()
+  preRange.selectNodeContents(startSegment)
+  preRange.setEnd(range.startContainer, range.startOffset)
+
+  const contentIndex = preRange.toString().length
+  const contentLength = selectedText.length
+
+  return {
+    segmentId,
+    contentIndex,
+    contentLength,
+  }
+}
+
+function handleSelection() {
+  const position = buildPositionFromSelection()
+  if (!position) {
+    return
+  }
+
+  selectedPosition.value = position
+  setSuccess('已更新選取位置。')
+}
+
+async function copyPositionJson() {
+  if (!selectedPosition.value) {
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(selectedPosition.value))
+    setSuccess('已複製 JSON。')
+  } catch (error) {
+    setError(error)
   }
 }
 
@@ -275,15 +351,22 @@ onBeforeUnmount(() => {
           <h2>論文閱讀區</h2>
         </div>
 
-        <div class="reader-shell">
+        <div class="reader-shell" @mouseup="handleSelection" @keyup="handleSelection">
           <div class="reader-meta">
             <span>目前檔案</span>
             <strong>{{ selectedDocumentName || '尚未選擇' }}</strong>
           </div>
 
-          <pre v-if="!pdfSegments.length && pdfContent">{{ pdfContent }}</pre>
+          <pre v-if="!pdfSegments.length && pdfContent" data-segment-id="1" class="content-block">
+            {{ pdfContent }}
+          </pre>
           <ul v-else-if="pdfSegments.length" class="segment-list">
-            <li v-for="segment in pdfSegments" :key="segment.segmentId ?? segment.content">
+            <li
+              v-for="segment in pdfSegments"
+              :key="segment.segmentId ?? segment.content"
+              class="segment-item"
+              :data-segment-id="segment.segmentId"
+            >
               {{ segment.content }}
             </li>
           </ul>
@@ -293,6 +376,22 @@ onBeforeUnmount(() => {
             <p>請先從左側上傳或選擇檔案，再按 Read 載入內容。</p>
           </div>
         </div>
+
+        <section class="selection-panel">
+          <div class="selection-head">
+            <h3>選取位置 JSON</h3>
+            <button
+              class="secondary"
+              :disabled="!selectedPositionJson"
+              type="button"
+              @click="copyPositionJson"
+            >
+              Copy
+            </button>
+          </div>
+          <pre v-if="selectedPositionJson" class="selection-json">{{ selectedPositionJson }}</pre>
+          <p v-else class="hint">在閱讀區選取一段文字，這裡會產生 position JSON。</p>
+        </section>
       </section>
     </section>
   </main>
@@ -381,9 +480,31 @@ h1 {
   box-shadow: 0 10px 28px rgba(31, 46, 44, 0.06);
 }
 
+.selection-panel {
+  margin-top: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.9rem;
+  box-shadow: 0 10px 28px rgba(31, 46, 44, 0.06);
+}
+
+.selection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
 .panel-card h2,
 .reader-head h2 {
   margin: 0 0 0.65rem;
+  font-size: 1rem;
+}
+
+.selection-head h3 {
+  margin: 0;
   font-size: 1rem;
 }
 
@@ -584,6 +705,16 @@ ul {
   text-overflow: ellipsis;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.selection-json {
+  margin: 0;
+  white-space: pre-wrap;
+  background: #0f1f1d;
+  color: #e9f2ee;
+  border-radius: 10px;
+  padding: 0.85rem;
+  font-size: 0.9rem;
 }
 
 pre {
