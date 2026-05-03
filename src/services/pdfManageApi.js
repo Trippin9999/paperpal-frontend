@@ -13,6 +13,19 @@ function normalizeSegments(segmentList) {
     .filter((segment) => segment.content)
 }
 
+function normalizeBookmarks(bookmarkList) {
+  if (!Array.isArray(bookmarkList)) {
+    return []
+  }
+
+  return bookmarkList.map((bookmark) => ({
+    bookmarkId: bookmark?.bookmarkId ?? bookmark?.bookmarkid ?? bookmark?.id ?? null,
+    title: bookmark?.title ?? '',
+    layer: bookmark?.layer ?? null,
+    position: bookmark?.position ?? null,
+  }))
+}
+
 async function parseResponse(response) {
   const data = await response.json().catch(() => ({}))
 
@@ -101,4 +114,32 @@ export async function createBookmark(documentId, position) {
   })
 
   return parseResponse(response)
+}
+
+export async function renameBookmark(bookmarkId, newTitle) {
+  const params = new URLSearchParams({ bookmarkId, newTitle })
+  const response = await fetch(`${API_BASE_URL}/api/content/renameBookmark?${params.toString()}`, {
+    method: 'POST',
+  })
+
+  return parseResponse(response)
+}
+
+export async function removeBookmark(bookmarkId) {
+  const params = new URLSearchParams({ bookmarkId })
+  const response = await fetch(`${API_BASE_URL}/api/content/removeBookmark?${params.toString()}`, {
+    method: 'POST',
+  })
+
+  return parseResponse(response)
+}
+
+export async function listBookmarks(documentId) {
+  const params = new URLSearchParams({ documentId })
+  const response = await fetch(`${API_BASE_URL}/api/content/bookmarkList?${params.toString()}`)
+  const data = await parseResponse(response)
+
+  return {
+    bookmarks: normalizeBookmarks(data),
+  }
 }

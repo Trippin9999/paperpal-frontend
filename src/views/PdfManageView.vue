@@ -1,10 +1,13 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   createBookmark,
   deletePdf,
   listPdfs,
+  listBookmarks,
   readPdf,
+  removeBookmark,
+  renameBookmark,
   renamePdf,
   uploadPdf,
 } from '@/services/pdfManageApi'
@@ -24,6 +27,9 @@ const pdfSegments = ref([])
 const documents = ref([])
 const fileListLoading = ref(false)
 const selectedPosition = ref(null)
+const bookmarks = ref([])
+const bookmarkListLoading = ref(false)
+const bookmarkEdits = reactive({})
 let pollTimer = null
 
 const selectedPositionJson = computed(() =>
@@ -119,6 +125,7 @@ async function handleRead() {
     pdfSegments.value = Array.isArray(result.segmentList) ? result.segmentList : []
     pdfContent.value = result.content || ''
     selectedPosition.value = null
+    await fetchBookmarkList(selectedDocumentId.value, { silent: true })
     setSuccess(result.message || 'Read successful.')
   } catch (error) {
     setError(error)
@@ -176,6 +183,7 @@ async function handleDelete() {
     pdfSegments.value = []
     renameNewFilename.value = ''
     selectedPosition.value = null
+    bookmarks.value = []
     await refreshFileList({ silent: true })
   } catch (error) {
     setError(error)
@@ -266,7 +274,78 @@ async function handleCreateBookmark() {
   working.value = true
   try {
     const result = await createBookmark(selectedDocumentId.value, selectedPosition.value)
+    await fetchBookmarkList(selectedDocumentId.value, { silent: true })
     setSuccess(result.message || 'Bookmark 建立成功')
+  } catch (error) {
+    setError(error)
+  } finally {
+    working.value = false
+  }
+}
+
+async function fetchBookmarkList(documentId, { silent = false } = {}) {
+  if (!documentId) {
+    return
+  }
+
+  if (!silent) {
+    bookmarkListLoading.value = true
+  }
+
+  try {
+    const result = await listBookmarks(documentId)
+    bookmarks.value = Array.isArray(result.bookmarks) ? result.bookmarks : []
+
+    bookmarks.value.forEach((bookmark) => {
+      if (bookmark?.bookmarkId != null && bookmarkEdits[bookmark.bookmarkId] == null) {
+        bookmarkEdits[bookmark.bookmarkId] = bookmark.title || ''
+      }
+    })
+  } catch (error) {
+    if (!silent) {
+      setError(error)
+    }
+  } finally {
+    if (!silent) {
+      bookmarkListLoading.value = false
+    }
+  }
+}
+
+async function handleRenameBookmark(bookmarkId) {
+  const newTitle = (bookmarkEdits[bookmarkId] || '').trim()
+  if (!bookmarkId) {
+    setError('請先選擇 Bookmark。')
+    return
+  }
+  if (!newTitle) {
+    setError('請輸入新的 Bookmark 名稱。')
+    return
+  }
+
+  working.value = true
+  try {
+    const result = await renameBookmark(bookmarkId, newTitle)
+    await fetchBookmarkList(selectedDocumentId.value, { silent: true })
+    setSuccess(result.message || 'Bookmark 更新成功')
+  } catch (error) {
+    setError(error)
+  } finally {
+    working.value = false
+  }
+}
+
+async function handleRemoveBookmark(bookmarkId) {
+  if (!bookmarkId) {
+    setError('請先選擇 Bookmark。')
+    return
+  }
+
+  working.value = true
+  try {
+    const result = await removeBookmark(bookmarkId)
+    await fetchBookmarkList(selectedDocumentId.value, { silent: true })
+    setSuccess(result.message || 'Bookmark 刪除成功')
   } catch (error) {
     setError(error)
   } finally {
@@ -430,6 +509,57 @@ onBeforeUnmount(() => {
           <pre v-if="selectedPositionJson" class="selection-json">{{ selectedPositionJson }}</pre>
           <p v-else class="hint">在閱讀區選取一段文字，這裡會產生 position JSON。</p>
         </section>
+
+        <section class="bookmark-panel">
+          <div class="bookmark-head">
+            <h3>Bookmark 清單</h3>
+            <button
+              class="secondary"
+              :disabled="bookmarkListLoading || !selectedDocumentId"
+              type="button"
+              @click="fetchBookmarkList(selectedDocumentId)"
+            >
+              重新載入
+            </button>
+          </div>
+          <p v-if="bookmarkListLoading" class="hint">Loading bookmarks...</p>
+          <ul v-else-if="bookmarks.length" class="bookmark-list">
+            <li v-for="bookmark in bookmarks" :key="bookmark.bookmarkId" class="bookmark-item">
+              <div class="bookmark-title">
+                <strong>{{ bookmark.title || '未命名 Bookmark' }}</strong>
+                <span class="hint">ID: {{ bookmark.bookmarkId }}</span>
+              </div>
+              <p class="bookmark-position hint">
+                Segment {{ bookmark.position?.segmentId ?? '-' }},
+                Index {{ bookmark.position?.contentIndex ?? '-' }},
+                Length {{ bookmark.position?.contentLength ?? '-' }}
+              </p>
+              <div class="bookmark-actions">
+                <input
+                  v-model="bookmarkEdits[bookmark.bookmarkId]"
+                  placeholder="new title"
+                />
+                <button
+                  class="secondary"
+                  type="button"
+                  :disabled="working"
+                  @click="handleRenameBookmark(bookmark.bookmarkId)"
+                >
+                  Rename
+                </button>
+                <button
+                  class="danger"
+                  type="button"
+                  :disabled="working"
+                  @click="handleRemoveBookmark(bookmark.bookmarkId)"
+                >
+                  Remove
+                </button>
+              </div>
+            </li>
+          </ul>
+          <p v-else class="hint">尚未建立 Bookmark。</p>
+        </section>
       </section>
     </section>
   </main>
@@ -527,7 +657,24 @@ h1 {
   box-shadow: 0 10px 28px rgba(31, 46, 44, 0.06);
 }
 
+.bookmark-panel {
+  margin-top: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.9rem;
+  box-shadow: 0 10px 28px rgba(31, 46, 44, 0.06);
+}
+
 .selection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
+.bookmark-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -548,6 +695,11 @@ h1 {
 }
 
 .selection-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.bookmark-head h3 {
   margin: 0;
   font-size: 1rem;
 }
@@ -768,6 +920,41 @@ ul {
   border-radius: 10px;
   padding: 0.85rem;
   font-size: 0.9rem;
+}
+
+.bookmark-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  max-height: 260px;
+  overflow: auto;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.bookmark-item {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.bookmark-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.bookmark-position {
+  margin: 0.3rem 0 0.6rem;
+}
+
+.bookmark-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
 }
 
 pre {
