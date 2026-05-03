@@ -2,9 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   createBookmark,
+  createNote,
   deletePdf,
   listPdfs,
   listBookmarks,
+  listNotes,
   readPdf,
   removeBookmark,
   renameBookmark,
@@ -30,11 +32,107 @@ const selectedPosition = ref(null)
 const bookmarks = ref([])
 const bookmarkListLoading = ref(false)
 const bookmarkEdits = reactive({})
+const notes = ref([])
+const noteListLoading = ref(false)
+const noteType = ref('sticky')
+const noteContent = ref('')
+const noteColor = ref('#FFE08A')
+const selectedNoteId = ref(null)
+const segmentRefs = reactive({})
+const contentBlockRef = ref(null)
+const jumpHighlightSegmentId = ref(null)
+let jumpTimer = null
 let pollTimer = null
 
 const selectedPositionJson = computed(() =>
   selectedPosition.value ? JSON.stringify(selectedPosition.value, null, 2) : '',
 )
+
+const notesBySegmentId = computed(() => {
+  const map = {}
+  notes.value.forEach((note) => {
+    const segmentId = note?.position?.segmentId
+    if (segmentId == null) {
+      return
+    }
+    if (!map[segmentId]) {
+      map[segmentId] = []
+    }
+    map[segmentId].push(note)
+  })
+  return map
+})
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+function getHighlightRanges(segmentId, textLength) {
+  const segmentNotes = notesBySegmentId.value[segmentId] || []
+  const ranges = segmentNotes
+    .filter((note) => getNoteKind(note) === 'highlighter')
+    .map((note) => {
+      const start = Number(note?.position?.contentIndex ?? 0)
+      const length = Number(note?.position?.contentLength ?? 0)
+      return {
+        start,
+        end: start + length,
+        color: note?.backgroundColor || '#ffe08a',
+      }
+    })
+    .filter((range) => range.start >= 0 && range.end > range.start && range.start < textLength)
+    .map((range) => ({
+      ...range,
+      end: Math.min(range.end, textLength),
+    }))
+    .sort((a, b) => a.start - b.start)
+
+  const normalized = []
+  let cursor = 0
+  ranges.forEach((range) => {
+    if (range.start < cursor) {
+      return
+    }
+    normalized.push(range)
+    cursor = range.end
+  })
+
+  return normalized
+}
+
+function renderSegmentHtml(segment) {
+  const content = segment?.content ?? ''
+  if (!content) {
+    return ''
+  }
+
+  const segmentId = segment?.segmentId ?? 1
+  const ranges = getHighlightRanges(segmentId, content.length)
+  if (!ranges.length) {
+    return escapeHtml(content)
+  }
+
+  let html = ''
+  let cursor = 0
+  ranges.forEach((range) => {
+    if (range.start > cursor) {
+      html += escapeHtml(content.slice(cursor, range.start))
+    }
+    html += `<span class="highlight" style="background-color: ${range.color}">` +
+      `${escapeHtml(content.slice(range.start, range.end))}</span>`
+    cursor = range.end
+  })
+  if (cursor < content.length) {
+    html += escapeHtml(content.slice(cursor))
+  }
+
+  return html
+}
 
 function setSuccess(msg) {
   message.value = msg
@@ -49,6 +147,27 @@ function setError(err) {
 function useFile(document) {
   selectedDocumentId.value = document?.id ?? null
   selectedDocumentName.value = document?.filename ?? ''
+}
+
+function setSegmentRef(segmentId, element) {
+  if (segmentId == null) {
+    return
+  }
+  if (element) {
+    segmentRefs[segmentId] = element
+    return
+  }
+  delete segmentRefs[segmentId]
+}
+
+function flashJumpTarget(segmentId) {
+  jumpHighlightSegmentId.value = segmentId
+  if (jumpTimer) {
+    window.clearTimeout(jumpTimer)
+  }
+  jumpTimer = window.setTimeout(() => {
+    jumpHighlightSegmentId.value = null
+  }, 1400)
 }
 
 async function refreshFileList({ silent = false } = {}) {
@@ -126,6 +245,7 @@ async function handleRead() {
     pdfContent.value = result.content || ''
     selectedPosition.value = null
     await fetchBookmarkList(selectedDocumentId.value, { silent: true })
+    await fetchNoteList(selectedDocumentId.value, { silent: true })
     setSuccess(result.message || 'Read successful.')
   } catch (error) {
     setError(error)
@@ -184,6 +304,8 @@ async function handleDelete() {
     renameNewFilename.value = ''
     selectedPosition.value = null
     bookmarks.value = []
+    notes.value = []
+    selectedNoteId.value = null
     await refreshFileList({ silent: true })
   } catch (error) {
     setError(error)
@@ -245,6 +367,8 @@ function handleSelection() {
   }
 
   selectedPosition.value = position
+  selectedNoteId.value = null
+  jumpHighlightSegmentId.value = null
   setSuccess('已更新選取位置。')
 }
 
@@ -276,6 +400,86 @@ async function handleCreateBookmark() {
     const result = await createBookmark(selectedDocumentId.value, selectedPosition.value)
     await fetchBookmarkList(selectedDocumentId.value, { silent: true })
     setSuccess(result.message || 'Bookmark 建立成功')
+  } catch (error) {
+    setError(error)
+  } finally {
+    working.value = false
+  }
+}
+
+function getNoteKind(note) {
+  return note?.content ? 'sticky' : 'highlighter'
+}
+
+function getNoteLabel(note) {
+  return getNoteKind(note) === 'sticky' ? '便條' : '標記'
+}
+
+function handleSelectNote(note) {
+  if (!note) {
+    return
+  }
+  selectedNoteId.value = note.noteId
+  selectedPosition.value = note.position || null
+  setSuccess('已選取 Note 位置。')
+}
+
+async function fetchNoteList(documentId, { silent = false } = {}) {
+  if (!documentId) {
+    return
+  }
+
+  if (!silent) {
+    noteListLoading.value = true
+  }
+
+  try {
+    const result = await listNotes(documentId)
+    notes.value = Array.isArray(result.notes) ? result.notes : []
+  } catch (error) {
+    if (!silent) {
+      setError(error)
+    }
+  } finally {
+    if (!silent) {
+      noteListLoading.value = false
+    }
+  }
+}
+
+async function handleCreateNote() {
+  if (!selectedDocumentId.value) {
+    setError('請先選擇檔案。')
+    return
+  }
+  if (!selectedPosition.value) {
+    setError('請先在閱讀區選取文字。')
+    return
+  }
+
+  const payload = {}
+  if (noteType.value === 'sticky') {
+    const content = noteContent.value.trim()
+    if (!content) {
+      setError('請輸入便條內容。')
+      return
+    }
+    payload.content = content
+  } else {
+    const style = noteColor.value.trim()
+    if (!style) {
+      setError('請選擇標記顏色。')
+      return
+    }
+    payload.style = style
+  }
+
+  working.value = true
+  try {
+    const result = await createNote(selectedDocumentId.value, selectedPosition.value, payload)
+    await fetchNoteList(selectedDocumentId.value, { silent: true })
+    noteContent.value = ''
+    setSuccess(result.message || 'Note 建立成功')
   } catch (error) {
     setError(error)
   } finally {
@@ -353,6 +557,27 @@ async function handleRemoveBookmark(bookmarkId) {
   }
 }
 
+function handleJumpToBookmark(bookmark) {
+  if (!bookmark?.position) {
+    setError('書籤沒有位置資訊。')
+    return
+  }
+
+  const segmentId = bookmark.position.segmentId ?? 1
+  const targetEl = pdfSegments.value.length ? segmentRefs[segmentId] : contentBlockRef.value
+
+  if (!targetEl) {
+    setError('找不到對應段落。')
+    return
+  }
+
+  selectedPosition.value = bookmark.position
+  selectedNoteId.value = null
+  targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  flashJumpTarget(segmentId)
+  setSuccess('已跳轉至書籤位置。')
+}
+
 async function handleReadFromList(document) {
   useFile(document)
   await handleRead()
@@ -368,6 +593,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (pollTimer !== null) {
     window.clearInterval(pollTimer)
+  }
+  if (jumpTimer) {
+    window.clearTimeout(jumpTimer)
   }
 })
 </script>
@@ -464,7 +692,13 @@ onBeforeUnmount(() => {
             <strong>{{ selectedDocumentName || '尚未選擇' }}</strong>
           </div>
 
-          <pre v-if="!pdfSegments.length && pdfContent" data-segment-id="1" class="content-block">
+          <pre
+            v-if="!pdfSegments.length && pdfContent"
+            ref="contentBlockRef"
+            data-segment-id="1"
+            class="content-block"
+            :class="{ 'jump-target': jumpHighlightSegmentId === 1 }"
+          >
             {{ pdfContent }}
           </pre>
           <ul v-else-if="pdfSegments.length" class="segment-list">
@@ -473,8 +707,27 @@ onBeforeUnmount(() => {
               :key="segment.segmentId ?? segment.content"
               class="segment-item"
               :data-segment-id="segment.segmentId"
+              :ref="(el) => setSegmentRef(segment.segmentId, el)"
+              :class="{ 'jump-target': jumpHighlightSegmentId === segment.segmentId }"
             >
-              {{ segment.content }}
+              <div class="segment-text">{{ segment.content }}</div>
+              <div v-if="notesBySegmentId[segment.segmentId]" class="note-badges">
+                <button
+                  v-for="note in notesBySegmentId[segment.segmentId]"
+                  :key="note.noteId"
+                  class="note-badge"
+                  :class="{ 'note-badge-highlight': getNoteKind(note) === 'highlighter' }"
+                  type="button"
+                  :style="
+                    getNoteKind(note) === 'highlighter'
+                      ? { backgroundColor: note.backgroundColor || '#ffe08a' }
+                      : null
+                  "
+                  @click="handleSelectNote(note)"
+                >
+                  {{ getNoteLabel(note) }} #{{ note.noteId }}
+                </button>
+              </div>
             </li>
           </ul>
           <div v-else class="placeholder">
@@ -510,6 +763,37 @@ onBeforeUnmount(() => {
           <p v-else class="hint">在閱讀區選取一段文字，這裡會產生 position JSON。</p>
         </section>
 
+        <section class="note-panel">
+          <div class="note-head">
+            <h3>新增 Note</h3>
+          </div>
+          <div class="note-form">
+            <label class="note-field">
+              類型
+              <select v-model="noteType">
+                <option value="sticky">便條</option>
+                <option value="highlighter">標記</option>
+              </select>
+            </label>
+            <label v-if="noteType === 'sticky'" class="note-field">
+              內容
+              <textarea v-model="noteContent" rows="3" placeholder="輸入便條內容"></textarea>
+            </label>
+            <label v-else class="note-field">
+              標記顏色
+              <input v-model="noteColor" type="color" />
+            </label>
+            <button
+              class="primary"
+              type="button"
+              :disabled="working || !selectedPosition || !selectedDocumentId"
+              @click="handleCreateNote"
+            >
+              建立 Note
+            </button>
+          </div>
+        </section>
+
         <section class="bookmark-panel">
           <div class="bookmark-head">
             <h3>Bookmark 清單</h3>
@@ -526,7 +810,13 @@ onBeforeUnmount(() => {
           <ul v-else-if="bookmarks.length" class="bookmark-list">
             <li v-for="bookmark in bookmarks" :key="bookmark.bookmarkId" class="bookmark-item">
               <div class="bookmark-title">
-                <strong>{{ bookmark.title || '未命名 Bookmark' }}</strong>
+                <button
+                  class="bookmark-link"
+                  type="button"
+                  @click="handleJumpToBookmark(bookmark)"
+                >
+                  {{ bookmark.title || '未命名 Bookmark' }}
+                </button>
                 <span class="hint">ID: {{ bookmark.bookmarkId }}</span>
               </div>
               <p class="bookmark-position hint">
@@ -539,6 +829,14 @@ onBeforeUnmount(() => {
                   v-model="bookmarkEdits[bookmark.bookmarkId]"
                   placeholder="new title"
                 />
+                <button
+                  class="secondary"
+                  type="button"
+                  :disabled="working"
+                  @click="handleJumpToBookmark(bookmark)"
+                >
+                  跳轉
+                </button>
                 <button
                   class="secondary"
                   type="button"
@@ -559,6 +857,42 @@ onBeforeUnmount(() => {
             </li>
           </ul>
           <p v-else class="hint">尚未建立 Bookmark。</p>
+        </section>
+
+        <section class="note-list-panel">
+          <div class="note-head">
+            <h3>Note 清單</h3>
+            <button
+              class="secondary"
+              :disabled="noteListLoading || !selectedDocumentId"
+              type="button"
+              @click="fetchNoteList(selectedDocumentId)"
+            >
+              重新載入
+            </button>
+          </div>
+          <p v-if="noteListLoading" class="hint">Loading notes...</p>
+          <ul v-else-if="notes.length" class="note-list">
+            <li v-for="note in notes" :key="note.noteId" class="note-item">
+              <div class="note-title">
+                <strong>{{ getNoteLabel(note) }} #{{ note.noteId }}</strong>
+                <span class="hint">Segment {{ note.position?.segmentId ?? '-' }}</span>
+              </div>
+              <p class="note-detail hint">
+                Index {{ note.position?.contentIndex ?? '-' }},
+                Length {{ note.position?.contentLength ?? '-' }}
+              </p>
+              <p v-if="note.content" class="note-detail">{{ note.content }}</p>
+              <p v-else class="note-detail">
+                標記顏色: <span class="note-color" :style="{ backgroundColor: note.backgroundColor }"></span>
+                {{ note.backgroundColor || '-' }}
+              </p>
+              <button class="secondary" type="button" @click="handleSelectNote(note)">
+                選取位置
+              </button>
+            </li>
+          </ul>
+          <p v-else class="hint">尚未建立 Note。</p>
         </section>
       </section>
     </section>
@@ -666,6 +1000,16 @@ h1 {
   box-shadow: 0 10px 28px rgba(31, 46, 44, 0.06);
 }
 
+.note-panel,
+.note-list-panel {
+  margin-top: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.9rem;
+  box-shadow: 0 10px 28px rgba(31, 46, 44, 0.06);
+}
+
 .selection-head {
   display: flex;
   align-items: center;
@@ -675,6 +1019,14 @@ h1 {
 }
 
 .bookmark-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
+.note-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -704,6 +1056,11 @@ h1 {
   font-size: 1rem;
 }
 
+.note-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
 input {
   width: 100%;
   margin: 0.35rem 0;
@@ -712,6 +1069,27 @@ input {
   border-radius: 8px;
   background: #fff;
   box-sizing: border-box;
+}
+
+select,
+textarea {
+  width: 100%;
+  margin: 0.35rem 0;
+  padding: 0.56rem 0.68rem;
+  border: 1px solid #ccd6ce;
+  border-radius: 8px;
+  background: #fff;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+input[type='color'] {
+  padding: 0.2rem;
+  height: 2.4rem;
 }
 
 button {
@@ -922,6 +1300,56 @@ ul {
   font-size: 0.9rem;
 }
 
+.note-form {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.note-field {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+}
+
+.note-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  max-height: 260px;
+  overflow: auto;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.note-item {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.note-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.note-detail {
+  margin: 0.3rem 0 0.6rem;
+}
+
+.note-color {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid #bfc9c1;
+  vertical-align: middle;
+  margin-right: 0.4rem;
+}
+
 .bookmark-list {
   margin: 0;
   padding-left: 0;
@@ -937,6 +1365,21 @@ ul {
   border-radius: 12px;
   padding: 0.75rem;
   background: rgba(255, 255, 255, 0.85);
+}
+
+.bookmark-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: #1f4e47;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bookmark-link:hover {
+  text-decoration: underline;
 }
 
 .bookmark-title {
@@ -969,6 +1412,18 @@ pre {
   line-height: 1.55;
 }
 
+.content-block {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 62vh;
+  background: #101a1b;
+  color: #e8f2ef;
+  border-radius: 10px;
+  padding: 1rem;
+  line-height: 1.55;
+}
+
 .segment-list {
   margin: 0;
   padding-left: 1.2rem;
@@ -985,6 +1440,46 @@ pre {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 0.8rem 0.9rem;
+}
+
+.segment-text {
+  margin-bottom: 0.5rem;
+}
+
+.jump-target {
+  box-shadow: 0 0 0 2px rgba(34, 91, 154, 0.3), 0 0 0 6px rgba(34, 91, 154, 0.12);
+  border-radius: 10px;
+  transition: box-shadow 0.2s ease;
+}
+
+.highlight {
+  padding: 0 0.08rem;
+  border-radius: 4px;
+  box-shadow: inset 0 -0.35em 0 rgba(255, 255, 255, 0.12);
+}
+
+.note-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.note-badge {
+  border: 1px solid #c9d2cc;
+  background: #f1f6f3;
+  color: #1d2b2c;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  margin-top: 0;
+}
+
+.note-badge:hover {
+  background: #e7f0ea;
+}
+
+.note-badge-highlight:hover {
+  background: inherit;
 }
 
 .placeholder {

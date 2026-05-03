@@ -26,6 +26,19 @@ function normalizeBookmarks(bookmarkList) {
   }))
 }
 
+function normalizeNotes(noteList) {
+  if (!Array.isArray(noteList)) {
+    return []
+  }
+
+  return noteList.map((note) => ({
+    noteId: note?.noteId ?? note?.id ?? null,
+    position: note?.position ?? null,
+    content: note?.content ?? null,
+    backgroundColor: note?.backgroundColor ?? note?.style ?? null,
+  }))
+}
+
 async function parseResponse(response) {
   const data = await response.json().catch(() => ({}))
 
@@ -141,5 +154,35 @@ export async function listBookmarks(documentId) {
 
   return {
     bookmarks: normalizeBookmarks(data),
+  }
+}
+
+export async function createNote(documentId, position, { content, style } = {}) {
+  const params = new URLSearchParams({ documentId })
+  if (content) {
+    params.set('content', content)
+  }
+  if (style) {
+    params.set('style', style)
+  }
+
+  const response = await fetch(`${API_BASE_URL}/api/content/createNote?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(position),
+  })
+
+  return parseResponse(response)
+}
+
+export async function listNotes(documentId) {
+  const params = new URLSearchParams({ documentId })
+  const response = await fetch(`${API_BASE_URL}/api/content/noteList?${params.toString()}`)
+  const data = await parseResponse(response)
+
+  return {
+    notes: normalizeNotes(data),
   }
 }
