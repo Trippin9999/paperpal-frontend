@@ -10,7 +10,7 @@ const fileInputRef = ref(null)
 const working = ref(false)
 const message = ref('')
 const errorMessage = ref('')
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
+
 
 const selectedDocumentId = ref(null)
 const selectedDocumentName = ref('')
@@ -190,7 +190,7 @@ onBeforeUnmount(() => {
         <h1>論文管理與閱讀</h1>
         <p class="subtitle">先上傳論文檔案，再在右側閱讀區查看內容。整體流程維持簡單清晰。</p>
       </div>
-      <p class="api">API: {{ apiBaseUrl }}</p>
+
     </header>
 
     <section class="layout">

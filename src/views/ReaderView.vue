@@ -350,7 +350,7 @@ async function handleCreateNote() {
   }
 }
 
-async function handleRenameNote(note) {
+async function handleUpdateNote(note) {
   if (!note?.noteId) {
     setError('請先選擇 Note。')
     return
@@ -627,7 +627,7 @@ onBeforeUnmount(() => {
                   Rename
                 </button>
                 <button
-                  class="danger"
+                  class="secondary"
                   type="button"
                   @click="handleRemoveBookmark(bookmark.bookmarkId)"
                 >
@@ -690,9 +690,9 @@ onBeforeUnmount(() => {
                   v-if="getNoteKind(note) === 'sticky'"
                   class="secondary"
                   type="button"
-                  @click="handleRenameNote(note)"
+                  @click="handleUpdateNote(note)"
                 >
-                  Rename
+                  update
                 </button>
                 <button
                   class="secondary"
