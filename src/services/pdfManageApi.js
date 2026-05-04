@@ -186,3 +186,28 @@ export async function listNotes(documentId) {
     notes: normalizeNotes(data),
   }
 }
+
+export async function updateNote(noteId, { content, style } = {}) {
+  const params = new URLSearchParams({ noteId })
+  if (content) {
+    params.set('content', content)
+  }
+  if (style) {
+    params.set('style', style)
+  }
+
+  const response = await fetch(`${API_BASE_URL}/api/content/updateNote?${params.toString()}`, {
+    method: 'POST',
+  })
+
+  return parseResponse(response)
+}
+
+export async function removeNote(noteId) {
+  const params = new URLSearchParams({ noteId })
+  const response = await fetch(`${API_BASE_URL}/api/content/removeNote?${params.toString()}`, {
+    method: 'POST',
+  })
+
+  return parseResponse(response)
+}
