@@ -1010,6 +1010,7 @@ h1 {
 .reader-sidebar {
   display: grid;
   gap: 1rem;
+  align-self: stretch;
 }
 
 .note-panel {
@@ -1018,6 +1019,9 @@ h1 {
   border-radius: 14px;
   padding: 0.9rem;
   box-shadow: 0 10px 28px rgba(31, 46, 44, 0.06);
+  min-height: 72vh;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .note-head,
@@ -1129,7 +1133,7 @@ button:disabled {
   margin: 0;
   padding-left: 0;
   list-style: none;
-  max-height: 240px;
+  max-height: 52vh;
   overflow: auto;
   display: grid;
   gap: 0.75rem;
