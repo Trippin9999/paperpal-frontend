@@ -39,6 +39,7 @@ const selectedNoteId = ref(null)
 const segmentRefs = reactive({})
 const contentBlockRef = ref(null)
 const jumpHighlightSegmentId = ref(null)
+const isBookmarkOpen = ref(false)
 let jumpTimer = null
 
 const notesBySegmentId = computed(() => {
@@ -57,6 +58,24 @@ const notesBySegmentId = computed(() => {
 })
 
 const stickyNotes = computed(() => notes.value.filter((note) => getNoteKind(note) === 'sticky'))
+const stickyNotesBySegmentId = computed(() => {
+  const map = {}
+  stickyNotes.value.forEach((note) => {
+    const segmentId = note?.position?.segmentId
+    if (segmentId == null) {
+      return
+    }
+    if (!map[segmentId]) {
+      map[segmentId] = []
+    }
+    map[segmentId].push(note)
+  })
+  return map
+})
+
+const noteItemRefs = reactive({})
+const highlightedNoteId = ref(null)
+let noteFlashTimer = null
 
 function setSuccess(msg) {
   message.value = msg
@@ -85,15 +104,15 @@ function getNoteLabel(note) {
   return getNoteKind(note) === 'sticky' ? '便條' : '標記'
 }
 
-function getHighlightRanges(segmentId, textLength) {
+function getMarkRanges(segmentId, textLength) {
   const segmentNotes = notesBySegmentId.value[segmentId] || []
   const ranges = segmentNotes
-    .filter((note) => getNoteKind(note) === 'highlighter')
     .map((note) => {
       const start = Number(note?.position?.contentIndex ?? 0)
       const length = Number(note?.position?.contentLength ?? 0)
       return {
         noteId: note?.noteId ?? null,
+        kind: getNoteKind(note),
         start,
         end: start + length,
         color: note?.backgroundColor || '#ffe08a',
@@ -104,7 +123,14 @@ function getHighlightRanges(segmentId, textLength) {
       ...range,
       end: Math.min(range.end, textLength),
     }))
-    .sort((a, b) => a.start - b.start)
+    .sort((a, b) => {
+      if (a.start !== b.start) {
+        return a.start - b.start
+      }
+      const aOrder = a.kind === 'highlighter' ? 0 : 1
+      const bOrder = b.kind === 'highlighter' ? 0 : 1
+      return aOrder - bOrder
+    })
 
   const normalized = []
   let cursor = 0
@@ -126,7 +152,7 @@ function renderSegmentHtml(segment) {
   }
 
   const segmentId = segment?.segmentId ?? 1
-  const ranges = getHighlightRanges(segmentId, content.length)
+  const ranges = getMarkRanges(segmentId, content.length)
   if (!ranges.length) {
     return escapeHtml(content)
   }
@@ -138,13 +164,19 @@ function renderSegmentHtml(segment) {
       html += escapeHtml(content.slice(cursor, range.start))
     }
     const noteIdAttr = range.noteId != null ? ` data-note-id="${range.noteId}"` : ''
-    const removeButton =
-      range.noteId != null
-        ? `<button class="highlight-remove" type="button" data-note-id="${range.noteId}">移除</button>`
-        : ''
-    html += `<span class="highlight" style="background-color: ${range.color}"${noteIdAttr}>` +
-      `${escapeHtml(content.slice(range.start, range.end))}` +
-      `${removeButton}</span>`
+    if (range.kind === 'highlighter') {
+      const removeButton =
+        range.noteId != null
+          ? `<button class="highlight-remove" type="button" data-note-id="${range.noteId}">移除</button>`
+          : ''
+      html += `<span class="highlight" style="background-color: ${range.color}"${noteIdAttr}>` +
+        `${escapeHtml(content.slice(range.start, range.end))}` +
+        `${removeButton}</span>`
+    } else {
+      html += `<span class="sticky-underline"${noteIdAttr}>` +
+        `${escapeHtml(content.slice(range.start, range.end))}` +
+        `</span>`
+    }
     cursor = range.end
   })
   if (cursor < content.length) {
@@ -163,6 +195,27 @@ function setSegmentRef(segmentId, element) {
     return
   }
   delete segmentRefs[segmentId]
+}
+
+function setNoteItemRef(noteId, element) {
+  if (noteId == null) {
+    return
+  }
+  if (element) {
+    noteItemRefs[noteId] = element
+    return
+  }
+  delete noteItemRefs[noteId]
+}
+
+function flashNoteItem(noteId) {
+  highlightedNoteId.value = noteId
+  if (noteFlashTimer) {
+    window.clearTimeout(noteFlashTimer)
+  }
+  noteFlashTimer = window.setTimeout(() => {
+    highlightedNoteId.value = null
+  }, 1400)
 }
 
 function flashJumpTarget(segmentId) {
@@ -239,6 +292,14 @@ function handleHighlightClick(event) {
     return
   }
   if (!target.classList.contains('highlight-remove')) {
+    if (target.classList.contains('sticky-underline')) {
+      const noteId = Number(target.dataset.noteId)
+      if (!Number.isFinite(noteId)) {
+        setError('找不到便條資訊。')
+        return
+      }
+      handleJumpToStickyNoteById(noteId)
+    }
     return
   }
   const noteId = Number(target.dataset.noteId)
@@ -494,9 +555,33 @@ function handleJumpToBookmark(bookmark) {
 
   selectedPosition.value = bookmark.position
   selectedNoteId.value = null
-  targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
   flashJumpTarget(segmentId)
   setSuccess('已跳轉至書籤位置。')
+}
+
+function handleJumpToStickyNote(note) {
+  if (!note?.noteId) {
+    return
+  }
+  const targetEl = noteItemRefs[note.noteId]
+  if (!targetEl) {
+    return
+  }
+  targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  flashNoteItem(note.noteId)
+}
+
+function handleJumpToStickyNoteById(noteId) {
+  const note = notes.value.find((item) => item?.noteId === noteId)
+  if (!note || getNoteKind(note) !== 'sticky') {
+    return
+  }
+  handleJumpToStickyNote(note)
+}
+
+function toggleBookmarkRail() {
+  isBookmarkOpen.value = !isBookmarkOpen.value
 }
 
 function handleBack() {
@@ -542,6 +627,9 @@ onBeforeUnmount(() => {
   if (jumpTimer) {
     window.clearTimeout(jumpTimer)
   }
+  if (noteFlashTimer) {
+    window.clearTimeout(noteFlashTimer)
+  }
 })
 </script>
 
@@ -559,52 +647,12 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <section class="reader-layout">
-      <section class="reader-panel">
-        <div class="reader-head">
-          <h2>論文閱讀區</h2>
-        </div>
-
-        <div
-          class="reader-shell"
-          @mouseup="handleSelection"
-          @keyup="handleSelection"
-          @click="handleHighlightClick"
-        >
-          <div class="reader-meta">
-            <span>目前檔案</span>
-            <strong>{{ selectedDocumentName || selectedDocumentId || '尚未選擇' }}</strong>
-          </div>
-
-          <div
-            v-if="!pdfSegments.length && pdfContent"
-            ref="contentBlockRef"
-            data-segment-id="1"
-            class="content-block"
-            :class="{ 'jump-target': jumpHighlightSegmentId === 1 }"
-            v-html="renderSegmentHtml({ segmentId: 1, content: pdfContent })"
-          ></div>
-          <ul v-else-if="pdfSegments.length" class="segment-list">
-            <li
-              v-for="segment in pdfSegments"
-              :key="segment.segmentId ?? segment.content"
-              class="segment-item"
-              :data-segment-id="segment.segmentId"
-              :ref="(el) => setSegmentRef(segment.segmentId, el)"
-              :class="{ 'jump-target': jumpHighlightSegmentId === segment.segmentId }"
-            >
-              <div class="segment-text" v-html="renderSegmentHtml(segment)"></div>
-            </li>
-          </ul>
-          <div v-else class="placeholder">
-            <h3>已預留閱讀空間</h3>
-            <p>請先從管理頁面選擇檔案，再進入閱讀模式。</p>
-          </div>
-        </div>
-      </section>
-
-      <aside class="reader-sidebar">
-        <section class="bookmark-panel">
+    <section class="reader-layout" :class="{ 'rail-open': isBookmarkOpen }">
+      <aside class="bookmark-rail" :class="{ open: isBookmarkOpen }">
+        <button class="rail-toggle" type="button" @click="toggleBookmarkRail">
+          {{ isBookmarkOpen ? '收合' : '書籤' }}
+        </button>
+        <div v-if="isBookmarkOpen" class="bookmark-rail-body">
           <div class="bookmark-head">
             <h3>Bookmark</h3>
             <button
@@ -650,8 +698,52 @@ onBeforeUnmount(() => {
             </li>
           </ul>
           <p v-else class="hint">尚未建立 Bookmark。</p>
-        </section>
+        </div>
+      </aside>
+      <section class="reader-panel">
+        <div class="reader-head">
+          <h2>論文閱讀區</h2>
+        </div>
 
+        <div
+          class="reader-shell"
+          @mouseup="handleSelection"
+          @keyup="handleSelection"
+          @click="handleHighlightClick"
+        >
+          <div class="reader-meta">
+            <span>目前檔案</span>
+            <strong>{{ selectedDocumentName || selectedDocumentId || '尚未選擇' }}</strong>
+          </div>
+
+          <div
+            v-if="!pdfSegments.length && pdfContent"
+            ref="contentBlockRef"
+            data-segment-id="1"
+            class="content-block"
+            :class="{ 'jump-target': jumpHighlightSegmentId === 1 }"
+            v-html="renderSegmentHtml({ segmentId: 1, content: pdfContent })"
+          ></div>
+          <ul v-else-if="pdfSegments.length" class="segment-list">
+            <li
+              v-for="segment in pdfSegments"
+              :key="segment.segmentId ?? segment.content"
+              class="segment-item"
+              :data-segment-id="segment.segmentId"
+              :ref="(el) => setSegmentRef(segment.segmentId, el)"
+              :class="{ 'jump-target': jumpHighlightSegmentId === segment.segmentId }"
+            >
+              <div class="segment-text" v-html="renderSegmentHtml(segment)"></div>
+            </li>
+          </ul>
+          <div v-else class="placeholder">
+            <h3>已預留閱讀空間</h3>
+            <p>請先從管理頁面選擇檔案，再進入閱讀模式。</p>
+          </div>
+        </div>
+      </section>
+
+      <aside class="reader-sidebar">
         <section class="note-panel">
           <div class="note-head">
             <h3>Note</h3>
@@ -683,7 +775,13 @@ onBeforeUnmount(() => {
           </div>
           <p v-if="noteListLoading" class="hint">Loading notes...</p>
           <ul v-else-if="stickyNotes.length" class="note-list">
-            <li v-for="note in stickyNotes" :key="note.noteId" class="note-item">
+            <li
+              v-for="note in stickyNotes"
+              :key="note.noteId"
+              class="note-item"
+              :class="{ 'note-highlight': highlightedNoteId === note.noteId }"
+              :ref="(el) => setNoteItemRef(note.noteId, el)"
+            >
               <div class="note-title">
                 <strong>{{ getNoteLabel(note) }} #{{ note.noteId }}</strong>
                 <span class="hint">Segment {{ note.position?.segmentId ?? '-' }}</span>
@@ -789,9 +887,79 @@ h1 {
 
 .reader-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  --bookmark-rail: 64px;
+  grid-template-columns: var(--bookmark-rail) minmax(0, 1fr) minmax(280px, 360px);
   gap: 1rem;
   align-items: start;
+}
+
+.reader-layout.rail-open {
+  --bookmark-rail: 260px;
+}
+
+.bookmark-rail {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.75rem;
+  box-shadow: 0 10px 28px rgba(31, 46, 44, 0.06);
+  transition: width 0.2s ease;
+  overflow: hidden;
+}
+
+.bookmark-rail.open {
+  padding: 0.9rem;
+}
+
+.rail-toggle {
+  margin-top: 0;
+  width: 100%;
+  font-size: 0.85rem;
+  background: transparent;
+  color: #111;
+  border: 1px solid #111;
+}
+
+.rail-toggle:hover {
+  background: transparent;
+  color: #111;
+  border-color: #111;
+}
+
+.bookmark-rail-body {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.bookmark-rail .bookmark-head {
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+.bookmark-rail .bookmark-head h3 {
+  font-size: 0.95rem;
+}
+
+.bookmark-rail .bookmark-actions,
+.bookmark-rail .bookmark-title {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.bookmark-rail .bookmark-link,
+.bookmark-rail .bookmark-actions button,
+.bookmark-rail .bookmark-actions input {
+  width: 100%;
+}
+
+.bookmark-rail .bookmark-actions button {
+  margin-top: 0;
+}
+
+.bookmark-rail .bookmark-list {
+  max-height: 50vh;
 }
 
 .reader-panel {
@@ -844,8 +1012,7 @@ h1 {
   gap: 1rem;
 }
 
-.note-panel,
-.bookmark-panel {
+.note-panel {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -1049,6 +1216,7 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 0.8rem 0.9rem;
+  scroll-margin-top: 1rem;
 }
 
 .segment-text {
@@ -1060,6 +1228,13 @@ button:disabled {
   padding: 0 0.08rem;
   border-radius: 4px;
   box-shadow: inset 0 -0.35em 0 rgba(255, 255, 255, 0.12);
+}
+
+.reader-shell :deep(.sticky-underline) {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.16em;
+  cursor: pointer;
 }
 
 .reader-shell :deep(.highlight-remove) {
@@ -1086,6 +1261,11 @@ button:disabled {
   opacity: 1 !important;
   pointer-events: auto !important;
   visibility: visible;
+}
+
+.note-highlight {
+  box-shadow: 0 0 0 2px rgba(34, 91, 154, 0.35), 0 0 0 6px rgba(34, 91, 154, 0.18);
+  transition: box-shadow 0.2s ease;
 }
 
 .jump-target {
