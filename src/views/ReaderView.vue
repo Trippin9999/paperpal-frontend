@@ -56,6 +56,8 @@ const notesBySegmentId = computed(() => {
   return map
 })
 
+const stickyNotes = computed(() => notes.value.filter((note) => getNoteKind(note) === 'sticky'))
+
 function setSuccess(msg) {
   message.value = msg
   errorMessage.value = ''
@@ -91,6 +93,7 @@ function getHighlightRanges(segmentId, textLength) {
       const start = Number(note?.position?.contentIndex ?? 0)
       const length = Number(note?.position?.contentLength ?? 0)
       return {
+        noteId: note?.noteId ?? null,
         start,
         end: start + length,
         color: note?.backgroundColor || '#ffe08a',
@@ -134,8 +137,14 @@ function renderSegmentHtml(segment) {
     if (range.start > cursor) {
       html += escapeHtml(content.slice(cursor, range.start))
     }
-    html += `<span class="highlight" style="background-color: ${range.color}">` +
-      `${escapeHtml(content.slice(range.start, range.end))}</span>`
+    const noteIdAttr = range.noteId != null ? ` data-note-id="${range.noteId}"` : ''
+    const removeButton =
+      range.noteId != null
+        ? `<button class="highlight-remove" type="button" data-note-id="${range.noteId}">移除</button>`
+        : ''
+    html += `<span class="highlight" style="background-color: ${range.color}"${noteIdAttr}>` +
+      `${escapeHtml(content.slice(range.start, range.end))}` +
+      `${removeButton}</span>`
     cursor = range.end
   })
   if (cursor < content.length) {
@@ -222,6 +231,22 @@ function handleSelection() {
   selectedNoteId.value = null
   jumpHighlightSegmentId.value = null
   setSuccess('已更新選取位置。')
+}
+
+function handleHighlightClick(event) {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) {
+    return
+  }
+  if (!target.classList.contains('highlight-remove')) {
+    return
+  }
+  const noteId = Number(target.dataset.noteId)
+  if (!Number.isFinite(noteId)) {
+    setError('找不到標記資訊。')
+    return
+  }
+  handleRemoveNote(noteId)
 }
 
 
@@ -540,7 +565,12 @@ onBeforeUnmount(() => {
           <h2>論文閱讀區</h2>
         </div>
 
-        <div class="reader-shell" @mouseup="handleSelection" @keyup="handleSelection">
+        <div
+          class="reader-shell"
+          @mouseup="handleSelection"
+          @keyup="handleSelection"
+          @click="handleHighlightClick"
+        >
           <div class="reader-meta">
             <span>目前檔案</span>
             <strong>{{ selectedDocumentName || selectedDocumentId || '尚未選擇' }}</strong>
@@ -564,23 +594,6 @@ onBeforeUnmount(() => {
               :class="{ 'jump-target': jumpHighlightSegmentId === segment.segmentId }"
             >
               <div class="segment-text" v-html="renderSegmentHtml(segment)"></div>
-              <div v-if="notesBySegmentId[segment.segmentId]" class="note-badges">
-                <button
-                  v-for="note in notesBySegmentId[segment.segmentId]"
-                  :key="note.noteId"
-                  class="note-badge"
-                  :class="{ 'note-badge-highlight': getNoteKind(note) === 'highlighter' }"
-                  type="button"
-                  :style="
-                    getNoteKind(note) === 'highlighter'
-                      ? { backgroundColor: note.backgroundColor || '#ffe08a' }
-                      : null
-                  "
-                  @click="handleSelectNote(note)"
-                >
-                  {{ getNoteLabel(note) }} #{{ note.noteId }}
-                </button>
-              </div>
             </li>
           </ul>
           <div v-else class="placeholder">
@@ -669,29 +682,20 @@ onBeforeUnmount(() => {
             </label>
           </div>
           <p v-if="noteListLoading" class="hint">Loading notes...</p>
-          <ul v-else-if="notes.length" class="note-list">
-            <li v-for="note in notes" :key="note.noteId" class="note-item">
+          <ul v-else-if="stickyNotes.length" class="note-list">
+            <li v-for="note in stickyNotes" :key="note.noteId" class="note-item">
               <div class="note-title">
                 <strong>{{ getNoteLabel(note) }} #{{ note.noteId }}</strong>
                 <span class="hint">Segment {{ note.position?.segmentId ?? '-' }}</span>
               </div>
               <div class="note-edit">
-                <label v-if="getNoteKind(note) === 'sticky'" class="note-field">
+                <label class="note-field">
                   內容
-                  <textarea v-model="noteEdits[note.noteId]" rows="2" />
-                </label>
-                <label v-else class="note-field">
-                  標記顏色
-                  <input v-model="noteColorEdits[note.noteId]" type="color" />
+                  <textarea v-model="noteEdits[note.noteId]" rows="2"></textarea>
                 </label>
               </div>
               <div class="bookmark-actions">
-                <button
-                  v-if="getNoteKind(note) === 'sticky'"
-                  class="secondary"
-                  type="button"
-                  @click="handleUpdateNote(note)"
-                >
+                <button class="secondary" type="button" @click="handleUpdateNote(note)">
                   update
                 </button>
                 <button
@@ -705,7 +709,7 @@ onBeforeUnmount(() => {
               </div>
             </li>
           </ul>
-          <p v-else class="hint">尚未建立 Note。</p>
+          <p v-else class="hint">尚未建立便條 Note。</p>
         </section>
       </aside>
     </section>
@@ -1051,34 +1055,37 @@ button:disabled {
   margin-bottom: 0.5rem;
 }
 
-.highlight {
+.reader-shell :deep(.highlight) {
+  position: relative;
   padding: 0 0.08rem;
   border-radius: 4px;
   box-shadow: inset 0 -0.35em 0 rgba(255, 255, 255, 0.12);
 }
 
-.note-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-}
-
-.note-badge {
-  border: 1px solid #c9d2cc;
-  background: #f1f6f3;
-  color: #1d2b2c;
-  padding: 0.2rem 0.5rem;
+.reader-shell :deep(.highlight-remove) {
+  position: absolute;
+  top: -1.4rem;
+  right: 0;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  visibility: hidden;
+  border: 0;
   border-radius: 999px;
-  font-size: 0.78rem;
-  margin-top: 0;
+  padding: 0.25rem 0.6rem;
+  background: #b32424;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.35);
 }
 
-.note-badge:hover {
-  background: #e7f0ea;
-}
-
-.note-badge-highlight:hover {
-  background: inherit;
+.reader-shell :deep(.highlight:hover .highlight-remove) {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  visibility: visible;
 }
 
 .jump-target {
