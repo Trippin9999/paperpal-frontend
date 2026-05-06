@@ -25,6 +25,7 @@ const selectedDocumentName = ref('')
 const pdfContent = ref('')
 const pdfSegments = ref([])
 const selectedPosition = ref(null)
+const selectedTextContent = ref('')
 const bookmarks = ref([])
 const bookmarkListLoading = ref(false)
 const bookmarkEdits = reactive({})
@@ -77,6 +78,21 @@ const noteItemRefs = reactive({})
 const highlightedNoteId = ref(null)
 let noteFlashTimer = null
 
+const activeNoteIds = ref([])
+const activeStickyNotes = computed(() => {
+  return stickyNotes.value.filter(n => activeNoteIds.value.includes(n.noteId))
+})
+
+function openStickyNotePanel(noteId) {
+  if (!activeNoteIds.value.includes(noteId)) {
+    activeNoteIds.value.push(noteId)
+  }
+}
+
+function closeStickyNotePanel(noteId) {
+  activeNoteIds.value = activeNoteIds.value.filter(id => id !== noteId)
+}
+
 function setSuccess(msg) {
   message.value = msg
   errorMessage.value = ''
@@ -104,45 +120,78 @@ function getNoteLabel(note) {
   return getNoteKind(note) === 'sticky' ? '便條' : '標記'
 }
 
-function getMarkRanges(segmentId, textLength) {
-  const segmentNotes = notesBySegmentId.value[segmentId] || []
-  const ranges = segmentNotes
-    .map((note) => {
-      const start = Number(note?.position?.contentIndex ?? 0)
-      const length = Number(note?.position?.contentLength ?? 0)
-      return {
-        noteId: note?.noteId ?? null,
-        kind: getNoteKind(note),
-        start,
-        end: start + length,
-        color: note?.backgroundColor || '#ffe08a',
-      }
-    })
-    .filter((range) => range.start >= 0 && range.end > range.start && range.start < textLength)
-    .map((range) => ({
-      ...range,
-      end: Math.min(range.end, textLength),
-    }))
-    .sort((a, b) => {
-      if (a.start !== b.start) {
-        return a.start - b.start
-      }
-      const aOrder = a.kind === 'highlighter' ? 0 : 1
-      const bOrder = b.kind === 'highlighter' ? 0 : 1
-      return aOrder - bOrder
-    })
+function normalizeRanges(ranges, textLength) {
+  const valid = ranges
+    .filter((r) => r.start >= 0 && r.end > r.start && r.start < textLength)
+    .map((r) => ({ ...r, end: Math.min(r.end, textLength) }))
+    .sort((a, b) => a.start - b.start)
 
   const normalized = []
   let cursor = 0
-  ranges.forEach((range) => {
+  valid.forEach((range) => {
     if (range.start < cursor) {
       return
     }
     normalized.push(range)
     cursor = range.end
   })
-
   return normalized
+}
+
+function getMarkRanges(segmentId, textLength) {
+  // 回傳這段文字中所有有效且不重疊的 highlight 與 sticky
+  const segmentNotes = notesBySegmentId.value[segmentId] || []
+
+  const highlighters = []
+  const stickies = []
+
+  segmentNotes.forEach((note) => {
+    const start = Number(note?.position?.contentIndex ?? 0)
+    const length = Number(note?.position?.contentLength ?? 0)
+    const range = {
+      noteId: note?.noteId ?? null,
+      kind: getNoteKind(note),
+      start,
+      end: start + length,
+      color: note?.backgroundColor || '#ffe08a',
+    }
+    if (range.kind === 'highlighter') {
+      highlighters.push(range)
+    } else {
+      stickies.push(range)
+    }
+  })
+
+  return {
+    highlighters: normalizeRanges(highlighters, textLength),
+    stickies: normalizeRanges(stickies, textLength)
+  }
+}
+
+function applyStickiesToText(text, startIndex, stickies) {
+  if (!text) return ''
+  let html = ''
+  const endIndex = startIndex + text.length
+
+  const relevantStickies = stickies.filter(s => s.end > startIndex && s.start < endIndex)
+
+  let textCursor = 0
+  relevantStickies.forEach(sticky => {
+    const sStart = Math.max(startIndex, sticky.start) - startIndex
+    const sEnd = Math.min(endIndex, sticky.end) - startIndex
+
+    if (sStart > textCursor) {
+      html += escapeHtml(text.slice(textCursor, sStart))
+    }
+    const noteIdAttr = sticky.noteId != null ? ` data-note-id="${sticky.noteId}"` : ''
+    html += `<span class="sticky-underline"${noteIdAttr}>${escapeHtml(text.slice(sStart, sEnd))}</span>`
+    textCursor = sEnd
+  })
+
+  if (textCursor < text.length) {
+    html += escapeHtml(text.slice(textCursor))
+  }
+  return html
 }
 
 function renderSegmentHtml(segment) {
@@ -152,35 +201,39 @@ function renderSegmentHtml(segment) {
   }
 
   const segmentId = segment?.segmentId ?? 1
-  const ranges = getMarkRanges(segmentId, content.length)
-  if (!ranges.length) {
+  const { highlighters, stickies } = getMarkRanges(segmentId, content.length)
+
+  if (!highlighters.length && !stickies.length) {
     return escapeHtml(content)
   }
 
   let html = ''
   let cursor = 0
-  ranges.forEach((range) => {
-    if (range.start > cursor) {
-      html += escapeHtml(content.slice(cursor, range.start))
+
+  // 以 highlighter 為主框架，將 sticky 拆分或套用在其內部或外部
+  highlighters.forEach((h) => {
+    if (h.start > cursor) {
+      // 在 highlighter 之前的文字，套用 sticky
+      html += applyStickiesToText(content.slice(cursor, h.start), cursor, stickies)
     }
-    const noteIdAttr = range.noteId != null ? ` data-note-id="${range.noteId}"` : ''
-    if (range.kind === 'highlighter') {
-      const removeButton =
-        range.noteId != null
-          ? `<button class="highlight-remove" type="button" data-note-id="${range.noteId}">移除</button>`
-          : ''
-      html += `<span class="highlight" style="background-color: ${range.color}"${noteIdAttr}>` +
-        `${escapeHtml(content.slice(range.start, range.end))}` +
-        `${removeButton}</span>`
-    } else {
-      html += `<span class="sticky-underline"${noteIdAttr}>` +
-        `${escapeHtml(content.slice(range.start, range.end))}` +
-        `</span>`
-    }
-    cursor = range.end
+
+    // 渲染 highlighter 內部
+    const noteIdAttr = h.noteId != null ? ` data-note-id="${h.noteId}"` : ''
+    const removeButton = h.noteId != null
+      ? `<button class="highlight-remove" type="button" data-note-id="${h.noteId}">移除</button>`
+      : ''
+
+    const innerText = content.slice(h.start, h.end)
+    const innerHtml = applyStickiesToText(innerText, h.start, stickies)
+
+    html += `<span class="highlight" style="background-color: ${h.color}"${noteIdAttr}>` +
+      `${innerHtml}${removeButton}</span>`
+
+    cursor = h.end
   })
+
   if (cursor < content.length) {
-    html += escapeHtml(content.slice(cursor))
+    html += applyStickiesToText(content.slice(cursor), cursor, stickies)
   }
 
   return html
@@ -280,10 +333,18 @@ function handleSelection() {
     return
   }
 
+  selectedTextContent.value = window.getSelection()?.toString() || ''
   selectedPosition.value = position
   selectedNoteId.value = null
   jumpHighlightSegmentId.value = null
   setSuccess('已更新選取位置。')
+}
+
+function clearSelection() {
+  selectedPosition.value = null
+  selectedTextContent.value = ''
+  selectedNoteId.value = null
+  window.getSelection()?.removeAllRanges()
 }
 
 function handleHighlightClick(event) {
@@ -299,6 +360,7 @@ function handleHighlightClick(event) {
         return
       }
       handleJumpToStickyNoteById(noteId)
+      openStickyNotePanel(noteId)
     }
     return
   }
@@ -429,6 +491,13 @@ async function handleCreateNote() {
     await fetchNoteList(selectedDocumentId.value, { silent: true })
     noteContent.value = ''
     setSuccess(result.message || 'Note 建立成功')
+
+    if (noteType.value === 'sticky') {
+      const newNoteId = result.note?.noteId || Math.max(...stickyNotes.value.map(n => n.noteId), -1)
+      if (newNoteId !== -1 && Number.isFinite(newNoteId)) {
+        openStickyNotePanel(newNoteId)
+      }
+    }
   } catch (error) {
     setError(error)
   } finally {
@@ -555,7 +624,38 @@ function handleJumpToBookmark(bookmark) {
 
   selectedPosition.value = bookmark.position
   selectedNoteId.value = null
-  targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+
+  const contentIndex = bookmark.position.contentIndex || 0
+  const walk = document.createTreeWalker(targetEl, NodeFilter.SHOW_TEXT, null, false)
+  let n
+  let currentLen = 0
+  let foundNode = null
+  let foundOffset = 0
+
+  while ((n = walk.nextNode())) {
+    const len = n.nodeValue.length
+    if (currentLen + len >= contentIndex) {
+      foundNode = n
+      foundOffset = contentIndex - currentLen
+      break
+    }
+    currentLen += len
+  }
+
+  if (foundNode) {
+    const range = document.createRange()
+    const safeOffset = Math.min(Math.max(0, foundOffset), foundNode.nodeValue.length)
+    range.setStart(foundNode, safeOffset)
+    range.setEnd(foundNode, safeOffset)
+    const span = document.createElement('span')
+    range.insertNode(span)
+    span.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    span.remove()
+    targetEl.normalize()
+  } else {
+    targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   flashJumpTarget(segmentId)
   setSuccess('已跳轉至書籤位置。')
 }
@@ -602,6 +702,7 @@ async function loadFromRoute() {
     pdfSegments.value = Array.isArray(result.segmentList) ? result.segmentList : []
     pdfContent.value = result.content || ''
     selectedPosition.value = null
+    selectedTextContent.value = ''
     await fetchBookmarkList(selectedDocumentId.value, { silent: true })
     await fetchNoteList(selectedDocumentId.value, { silent: true })
     setSuccess(result.message || 'Read successful.')
@@ -675,7 +776,6 @@ onBeforeUnmount(() => {
                 >
                   {{ bookmark.title || '未命名 Bookmark' }}
                 </button>
-                <span class="hint">ID: {{ bookmark.bookmarkId }}</span>
               </div>
               <div class="bookmark-actions">
                 <input v-model="bookmarkEdits[bookmark.bookmarkId]" placeholder="new title" />
@@ -744,6 +844,20 @@ onBeforeUnmount(() => {
       </section>
 
       <aside class="reader-sidebar">
+        <div class="selection-preview">
+          <span class="preview-text">
+            {{ selectedTextContent ? `選取內容：${selectedTextContent}` : '尚未選取閱讀區文字' }}
+          </span>
+          <button
+            class="clear-selection-btn"
+            type="button"
+            :disabled="!selectedTextContent"
+            @click="clearSelection"
+          >
+            取消選取
+          </button>
+        </div>
+
         <section class="note-panel">
           <div class="note-head">
             <h3>Note</h3>
@@ -756,6 +870,7 @@ onBeforeUnmount(() => {
               建立
             </button>
           </div>
+
           <div class="note-form">
             <label class="note-field">
               類型
@@ -774,9 +889,9 @@ onBeforeUnmount(() => {
             </label>
           </div>
           <p v-if="noteListLoading" class="hint">Loading notes...</p>
-          <ul v-else-if="stickyNotes.length" class="note-list">
+          <ul v-else-if="activeStickyNotes.length" class="note-list">
             <li
-              v-for="note in stickyNotes"
+              v-for="note in activeStickyNotes"
               :key="note.noteId"
               class="note-item"
               :class="{ 'note-highlight': highlightedNoteId === note.noteId }"
@@ -784,7 +899,10 @@ onBeforeUnmount(() => {
             >
               <div class="note-title">
                 <strong>{{ getNoteLabel(note) }} #{{ note.noteId }}</strong>
-                <span class="hint">Segment {{ note.position?.segmentId ?? '-' }}</span>
+                <div class="note-title-actions">
+<!--                  <span class="hint">Segment {{ note.position?.segmentId ?? '-' }}</span>-->
+                  <button class="close-panel-btn" type="button" title="關閉顯示" @click="closeStickyNotePanel(note.noteId)">×</button>
+                </div>
               </div>
               <div class="note-edit">
                 <label class="note-field">
@@ -799,7 +917,7 @@ onBeforeUnmount(() => {
                 <button
                   class="secondary"
                   type="button"
-                  style="opacity: 1; visibility: visible; display: inline-flex;"
+                  style="opacity: 1; visibility: visible; display: inline-flex"
                   @click="handleRemoveNote(note.noteId)"
                 >
                   Remove
@@ -807,6 +925,7 @@ onBeforeUnmount(() => {
               </div>
             </li>
           </ul>
+          <p v-else-if="stickyNotes.length" class="hint">尚未開啟任何便條。<br>請點擊閱讀區內的便條底線或建立新便條來顯示內容。</p>
           <p v-else class="hint">尚未建立便條 Note。</p>
         </section>
       </aside>
@@ -1011,6 +1130,7 @@ h1 {
   display: grid;
   gap: 1rem;
   align-self: stretch;
+  min-width: 0;
 }
 
 .note-panel {
@@ -1053,6 +1173,56 @@ h1 {
 
 .note-edit {
   margin: 0.3rem 0 0.6rem;
+}
+
+.selection-preview {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--panel-muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.preview-text {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.clear-selection-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  background: var(--danger);
+  color: #fff;
+  margin-top: 0;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8rem;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.clear-selection-btn:hover {
+  background: #982f2f;
+}
+
+.clear-selection-btn:disabled {
+  background: #e1e6db;
+  color: #8fa094;
+  cursor: not-allowed;
+  opacity: 1;
 }
 
 input,
@@ -1155,6 +1325,28 @@ button:disabled {
   gap: 0.5rem;
 }
 
+.note-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.close-panel-btn {
+  background: transparent;
+  border: none;
+  color: var(--ink-soft);
+  font-size: 1.25rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+  margin: 0;
+  cursor: pointer;
+  font-weight: 500;
+}
+.close-panel-btn:hover {
+  color: var(--danger);
+  background: transparent;
+}
+
 .bookmark-link {
   border: 0;
   background: none;
@@ -1236,9 +1428,16 @@ button:disabled {
 
 .reader-shell :deep(.sticky-underline) {
   text-decoration: underline;
-  text-decoration-thickness: 2px;
-  text-underline-offset: 0.16em;
+  text-decoration-thickness: 1.5px;
+  text-decoration-skip-ink: none;
   cursor: pointer;
+}
+
+.reader-shell :deep(.sticky-underline:hover) {
+  background-color: rgba(34, 91, 154, 0.1);
+  color: #1b4b80;
+  text-decoration-thickness: 3px;
+  transition: all 0.2s ease;
 }
 
 .reader-shell :deep(.highlight-remove) {
@@ -1268,12 +1467,16 @@ button:disabled {
 }
 
 .note-highlight {
-  box-shadow: 0 0 0 2px rgba(34, 91, 154, 0.35), 0 0 0 6px rgba(34, 91, 154, 0.18);
+  box-shadow:
+    0 0 0 2px rgba(34, 91, 154, 0.35),
+    0 0 0 6px rgba(34, 91, 154, 0.18);
   transition: box-shadow 0.2s ease;
 }
 
 .jump-target {
-  box-shadow: 0 0 0 2px rgba(34, 91, 154, 0.3), 0 0 0 6px rgba(34, 91, 154, 0.12);
+  box-shadow:
+    0 0 0 2px rgba(34, 91, 154, 0.3),
+    0 0 0 6px rgba(34, 91, 154, 0.12);
   border-radius: 10px;
   transition: box-shadow 0.2s ease;
 }
