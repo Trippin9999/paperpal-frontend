@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   createBookmark,
@@ -49,7 +49,11 @@ const isSummaryVisible = ref(false)
 const translationParagraphs = ref([])
 const translationLoading = ref(false)
 const isTranslationVisible = ref(false)
+const sourceSegmentListRef = ref(null)
+const translationListRef = ref(null)
 let jumpTimer = null
+let syncingFromSource = false
+let syncingFromTranslation = false
 
 const notesBySegmentId = computed(() => {
   const map = {}
@@ -99,6 +103,56 @@ function openStickyNotePanel(noteId) {
 
 function closeStickyNotePanel(noteId) {
   activeNoteIds.value = activeNoteIds.value.filter(id => id !== noteId)
+}
+
+function getSourceScrollElement() {
+  return pdfSegments.value.length ? sourceSegmentListRef.value : contentBlockRef.value
+}
+
+function syncScrollByRatio(fromEl, toEl) {
+  if (!fromEl || !toEl) {
+    return
+  }
+
+  const fromMax = fromEl.scrollHeight - fromEl.clientHeight
+  const toMax = toEl.scrollHeight - toEl.clientHeight
+  const ratio = fromMax > 0 ? fromEl.scrollTop / fromMax : 0
+  toEl.scrollTop = ratio * Math.max(toMax, 0)
+}
+
+function handleSourceScroll() {
+  if (!isTranslationVisible.value) {
+    return
+  }
+  if (syncingFromTranslation) {
+    syncingFromTranslation = false
+    return
+  }
+
+  const fromEl = getSourceScrollElement()
+  const toEl = translationListRef.value
+  if (!fromEl || !toEl) {
+    return
+  }
+
+  syncingFromSource = true
+  syncScrollByRatio(fromEl, toEl)
+}
+
+function handleTranslationScroll() {
+  if (syncingFromSource) {
+    syncingFromSource = false
+    return
+  }
+
+  const fromEl = translationListRef.value
+  const toEl = getSourceScrollElement()
+  if (!fromEl || !toEl) {
+    return
+  }
+
+  syncingFromTranslation = true
+  syncScrollByRatio(fromEl, toEl)
 }
 
 function setSuccess(msg) {
@@ -727,6 +781,8 @@ async function handleGetTranslation() {
     const result = await getTranslation(selectedDocumentId.value)
     const raw = result?.reply || ''
     translationParagraphs.value = raw.split('\n').filter(line => line.trim())
+    await nextTick()
+    syncScrollByRatio(getSourceScrollElement(), translationListRef.value)
     setSuccess('翻譯已完成。')
   } catch (error) {
     setError(error)
@@ -739,6 +795,8 @@ async function handleGetTranslation() {
 function closeTranslation() {
   isTranslationVisible.value = false
   translationParagraphs.value = []
+  syncingFromSource = false
+  syncingFromTranslation = false
 }
 
 function handleBack() {
@@ -905,9 +963,10 @@ onBeforeUnmount(() => {
             data-segment-id="1"
             class="content-block"
             :class="{ 'jump-target': jumpHighlightSegmentId === 1 }"
+            @scroll="handleSourceScroll"
             v-html="renderSegmentHtml({ segmentId: 1, content: pdfContent })"
           ></div>
-          <ul v-else-if="pdfSegments.length" class="segment-list">
+          <ul v-else-if="pdfSegments.length" ref="sourceSegmentListRef" class="segment-list" @scroll="handleSourceScroll">
             <li
               v-for="segment in pdfSegments"
               :key="segment.segmentId ?? segment.content"
@@ -939,7 +998,7 @@ onBeforeUnmount(() => {
           <div v-if="translationLoading" class="placeholder">
             <p>正在翻譯中，請稍候…</p>
           </div>
-          <ul v-else-if="translationParagraphs.length" class="segment-list translation-list">
+          <ul v-else-if="translationParagraphs.length" ref="translationListRef" class="segment-list translation-list" @scroll="handleTranslationScroll">
             <li v-for="(para, idx) in translationParagraphs" :key="idx" class="segment-item">
               <div class="segment-text">{{ para }}</div>
             </li>
