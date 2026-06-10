@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   createBookmark,
   createNote,
+  getSummary,
+  getTranslation,
   listBookmarks,
   listNotes,
   readPdf,
@@ -41,6 +43,12 @@ const segmentRefs = reactive({})
 const contentBlockRef = ref(null)
 const jumpHighlightSegmentId = ref(null)
 const isBookmarkOpen = ref(false)
+const summaryText = ref('')
+const summaryLoading = ref(false)
+const isSummaryVisible = ref(false)
+const translationParagraphs = ref([])
+const translationLoading = ref(false)
+const isTranslationVisible = ref(false)
 let jumpTimer = null
 
 const notesBySegmentId = computed(() => {
@@ -684,6 +692,55 @@ function toggleBookmarkRail() {
   isBookmarkOpen.value = !isBookmarkOpen.value
 }
 
+async function handleGetSummary() {
+  if (!selectedDocumentId.value) {
+    setError('請先選擇文件。')
+    return
+  }
+  summaryLoading.value = true
+  isSummaryVisible.value = true
+  try {
+    const result = await getSummary(selectedDocumentId.value)
+    summaryText.value = result?.reply || '（無摘要內容）'
+    setSuccess('摘要已產生。')
+  } catch (error) {
+    setError(error)
+    isSummaryVisible.value = false
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+function closeSummary() {
+  isSummaryVisible.value = false
+  summaryText.value = ''
+}
+
+async function handleGetTranslation() {
+  if (!selectedDocumentId.value) {
+    setError('請先選擇檔案。')
+    return
+  }
+  translationLoading.value = true
+  isTranslationVisible.value = true
+  try {
+    const result = await getTranslation(selectedDocumentId.value)
+    const raw = result?.reply || ''
+    translationParagraphs.value = raw.split('\n').filter(line => line.trim())
+    setSuccess('翻譯已完成。')
+  } catch (error) {
+    setError(error)
+    isTranslationVisible.value = false
+  } finally {
+    translationLoading.value = false
+  }
+}
+
+function closeTranslation() {
+  isTranslationVisible.value = false
+  translationParagraphs.value = []
+}
+
 function handleBack() {
   router.push({ name: 'pdf-manage' })
 }
@@ -753,6 +810,22 @@ onBeforeUnmount(() => {
         <button class="rail-toggle" type="button" @click="toggleBookmarkRail">
           {{ isBookmarkOpen ? '收合' : '書籤' }}
         </button>
+        <button
+          class="rail-toggle summary-btn"
+          type="button"
+          :disabled="summaryLoading || !selectedDocumentId"
+          @click="handleGetSummary"
+        >
+          {{ summaryLoading ? '…' : '摘要' }}
+        </button>
+        <button
+          class="rail-toggle translation-btn"
+          type="button"
+          :disabled="translationLoading || !selectedDocumentId"
+          @click="handleGetTranslation"
+        >
+          {{ translationLoading ? '…' : '翻譯' }}
+        </button>
         <div v-if="isBookmarkOpen" class="bookmark-rail-body">
           <div class="bookmark-head">
             <h3>Bookmark</h3>
@@ -800,9 +873,19 @@ onBeforeUnmount(() => {
           <p v-else class="hint">尚未建立 Bookmark。</p>
         </div>
       </aside>
+      <div class="reading-area" :class="{ 'translation-open': isTranslationVisible }">
       <section class="reader-panel">
         <div class="reader-head">
           <h2>論文閱讀區</h2>
+        </div>
+
+        <div v-if="isSummaryVisible" class="summary-block">
+          <div class="summary-block-head">
+            <strong>AI 摘要</strong>
+            <button class="close-panel-btn" type="button" title="關閉摘要" @click="closeSummary">×</button>
+          </div>
+          <p v-if="summaryLoading" class="hint">正在產生摘要，請稍候…</p>
+          <p v-else class="summary-content">{{ summaryText }}</p>
         </div>
 
         <div
@@ -842,6 +925,31 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </section>
+
+      <aside v-if="isTranslationVisible" class="translation-panel">
+        <div class="reader-head">
+          <h2>中文譯文</h2>
+          <button class="close-panel-btn" type="button" title="關閉譯文" @click="closeTranslation">×</button>
+        </div>
+        <div class="reader-shell translation-shell">
+          <div class="reader-meta">
+            <span>AI 翻譯</span>
+            <strong>{{ selectedDocumentName || selectedDocumentId || '—' }}</strong>
+          </div>
+          <div v-if="translationLoading" class="placeholder">
+            <p>正在翻譯中，請稍候…</p>
+          </div>
+          <ul v-else-if="translationParagraphs.length" class="segment-list translation-list">
+            <li v-for="(para, idx) in translationParagraphs" :key="idx" class="segment-item">
+              <div class="segment-text">{{ para }}</div>
+            </li>
+          </ul>
+          <div v-else class="placeholder">
+            <p>尚無譯文。</p>
+          </div>
+        </div>
+      </aside>
+      </div>
 
       <aside class="reader-sidebar">
         <div class="selection-preview">
@@ -1016,6 +1124,32 @@ h1 {
   --bookmark-rail: 260px;
 }
 
+.reading-area {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.reading-area.translation-open {
+  grid-template-columns: 1fr 1fr;
+}
+
+.translation-panel {
+  display: grid;
+  gap: 0.7rem;
+  min-height: 72vh;
+  min-width: 0;
+}
+
+.translation-shell {
+  background: linear-gradient(180deg, #f0f6ff 0%, #e8f0fb 100%) !important;
+}
+
+.translation-list .segment-text {
+  color: #1a3050;
+}
+
 .bookmark-rail {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -1045,6 +1179,58 @@ h1 {
   background: transparent;
   color: #111;
   border-color: #111;
+}
+
+.summary-btn {
+  margin-top: 0.4rem;
+  background: var(--accent);
+  border: none;
+}
+
+.summary-btn:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+.summary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.translation-btn {
+  margin-top: 0;
+  border: none;
+}
+
+.translation-btn:hover:not(:disabled) {
+  background: #ffffff;
+}
+
+.translation-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.summary-block {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  box-shadow: 0 6px 18px rgba(31, 46, 44, 0.07);
+}
+
+.summary-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.55rem;
+}
+
+.summary-content {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.7;
+  font-size: 0.93rem;
+  color: var(--ink);
 }
 
 .bookmark-rail-body {
@@ -1521,6 +1707,10 @@ button:disabled {
 
 @media (max-width: 1024px) {
   .reader-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .reading-area.translation-open {
     grid-template-columns: 1fr;
   }
 

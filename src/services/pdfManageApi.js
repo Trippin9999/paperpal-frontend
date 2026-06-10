@@ -211,3 +211,21 @@ export async function removeNote(noteId) {
 
   return parseResponse(response)
 }
+
+export async function getSummary(documentId) {
+  const params = new URLSearchParams({ documentId })
+  const response = await fetch(`${API_BASE_URL}/api/gemini/summary?${params.toString()}`, {
+    method: 'POST',
+  })
+
+  return parseResponse(response)
+}
+
+export async function getTranslation(documentId) {
+  const params = new URLSearchParams({ documentId })
+  const response = await fetch(`${API_BASE_URL}/api/gemini/translation?${params.toString()}`, {
+    method: 'POST',
+  })
+
+  return parseResponse(response)
+}
