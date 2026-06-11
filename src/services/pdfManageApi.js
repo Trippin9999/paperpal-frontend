@@ -39,6 +39,38 @@ function normalizeNotes(noteList) {
   }))
 }
 
+function normalizeReferences(referenceList) {
+  if (!Array.isArray(referenceList)) {
+    return []
+  }
+
+  return referenceList.map((reference) => ({
+    referenceId: reference?.referenceId ?? reference?.id ?? null,
+    title: reference?.title ?? '',
+    type: reference?.type ?? 'Reference',
+    position: reference?.position ?? null,
+    latexCode: reference?.latexCode ?? '',
+    imageUrl: reference?.imageUrl ?? '',
+  }))
+}
+
+function normalizeReferenceBindings(bindingList) {
+  if (!Array.isArray(bindingList)) {
+    return []
+  }
+
+  return bindingList.map((binding) => ({
+    position: {
+      segmentId: binding?.position?.segmentId != null ? Number(binding.position.segmentId) : null,
+      contentIndex: binding?.position?.contentIndex != null ? Number(binding.position.contentIndex) : null,
+      contentLength: binding?.position?.contentLength != null ? Number(binding.position.contentLength) : null,
+    },
+    referenceIds: Array.isArray(binding?.referenceIds)
+      ? binding.referenceIds.map((id) => Number(id)).filter((id) => Number.isFinite(id))
+      : [],
+  }))
+}
+
 async function parseResponse(response) {
   const data = await response.json().catch(() => ({}))
 
@@ -228,4 +260,50 @@ export async function getTranslation(documentId) {
   })
 
   return parseResponse(response)
+}
+
+export async function getOptionReferences(documentId) {
+  const params = new URLSearchParams({ documentId })
+  const response = await fetch(`${API_BASE_URL}/api/reference/getOptionReference?${params.toString()}`)
+  const data = await parseResponse(response)
+
+  return {
+    references: normalizeReferences(data),
+  }
+}
+
+export async function createReferenceBinding(documentId, position, optionalReferenceId) {
+  const params = new URLSearchParams({ documentId })
+  const response = await fetch(`${API_BASE_URL}/api/reference/setReference?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      position,
+      optionalReferenceId,
+    }),
+  })
+
+  return parseResponse(response)
+}
+
+export async function getReference(documentId, referenceId) {
+  const params = new URLSearchParams({ documentId, referenceId })
+  const response = await fetch(`${API_BASE_URL}/api/reference/getReference?${params.toString()}`)
+  const data = await parseResponse(response)
+
+  return {
+    reference: normalizeReferences([data])[0] ?? null,
+  }
+}
+
+export async function getReferenceList(documentId) {
+  const params = new URLSearchParams({ documentId })
+  const response = await fetch(`${API_BASE_URL}/api/reference/getReferenceList?${params.toString()}`)
+  const data = await parseResponse(response)
+
+  return {
+    referenceBindings: normalizeReferenceBindings(data),
+  }
 }

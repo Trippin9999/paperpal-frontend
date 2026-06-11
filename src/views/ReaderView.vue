@@ -2,8 +2,12 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
+  createReferenceBinding,
   createBookmark,
   createNote,
+  getOptionReferences,
+  getReference as getReferenceDetail,
+  getReferenceList as getReferenceBindingList,
   getSummary,
   getTranslation,
   listBookmarks,
@@ -51,6 +55,15 @@ const translationLoading = ref(false)
 const isTranslationVisible = ref(false)
 const sourceSegmentListRef = ref(null)
 const translationListRef = ref(null)
+const referenceBindings = ref([])
+const referenceOptionList = ref([])
+const referenceOptionLoading = ref(false)
+const isReferencePickerVisible = ref(false)
+const selectedOptionalReferenceId = ref(null)
+const activeReferenceItems = ref([])
+const referencePopupVisible = ref(false)
+const referencePopupPosition = reactive({ x: 0, y: 0 })
+const referenceDetailCache = reactive({})
 let jumpTimer = null
 let syncingFromSource = false
 let syncingFromTranslation = false
@@ -165,6 +178,245 @@ function setError(err) {
   message.value = ''
 }
 
+function clonePosition(position) {
+  if (!position) {
+    return null
+  }
+  return {
+    segmentId: Number(position.segmentId),
+    contentIndex: Number(position.contentIndex),
+    contentLength: Number(position.contentLength),
+  }
+}
+
+function getPositionKey(position) {
+  if (!position) {
+    return ''
+  }
+  const normalized = clonePosition(position)
+  if (!normalized || !Number.isFinite(normalized.segmentId) || !Number.isFinite(normalized.contentIndex) || !Number.isFinite(normalized.contentLength)) {
+    return ''
+  }
+  return `${normalized.segmentId}:${normalized.contentIndex}:${normalized.contentLength}`
+}
+
+function closeReferencePicker() {
+  isReferencePickerVisible.value = false
+  selectedOptionalReferenceId.value = null
+}
+
+function closeReferencePopup() {
+  referencePopupVisible.value = false
+  activeReferenceItems.value = []
+}
+
+function upsertReferenceBinding(position, referenceId) {
+  const normalizedPosition = clonePosition(position)
+  const normalizedReferenceId = Number(referenceId)
+  if (!normalizedPosition || !Number.isFinite(normalizedReferenceId)) {
+    return
+  }
+
+  const key = getPositionKey(normalizedPosition)
+  if (!key) {
+    return
+  }
+
+  const target = referenceBindings.value.find((item) => getPositionKey(item.position) === key)
+  if (!target) {
+    referenceBindings.value.push({
+      position: normalizedPosition,
+      referenceIds: [normalizedReferenceId],
+    })
+    return
+  }
+
+  if (!Array.isArray(target.referenceIds)) {
+    target.referenceIds = []
+  }
+  if (!target.referenceIds.includes(normalizedReferenceId)) {
+    target.referenceIds.push(normalizedReferenceId)
+  }
+}
+
+function toImageSrc(raw) {
+  if (!raw) {
+    return ''
+  }
+
+  const cleaned = String(raw).trim()
+  if (!cleaned) {
+    return ''
+  }
+
+  if (cleaned.startsWith('data:image/')) {
+    return cleaned
+  }
+  if (/^https?:\/\//i.test(cleaned)) {
+    return cleaned
+  }
+  if (cleaned.startsWith('base64,')) {
+    return `data:image/png;${cleaned}`
+  }
+  if (cleaned.includes(';base64,')) {
+    return `data:image/png;base64,${cleaned.split(';base64,')[1]}`
+  }
+
+  return `data:image/png;base64,${cleaned}`
+}
+
+function findReferenceBindingByPoint(segmentId, contentIndex) {
+  if (!Number.isFinite(segmentId) || !Number.isFinite(contentIndex)) {
+    return null
+  }
+
+  return referenceBindings.value.find((binding) => {
+    const position = clonePosition(binding?.position)
+    if (!position) {
+      return false
+    }
+    const start = position.contentIndex
+    const end = start + position.contentLength
+    return position.segmentId === segmentId && contentIndex >= start && contentIndex < end
+  }) || null
+}
+
+function buildPointFromClick(event) {
+  if (!(event?.target instanceof HTMLElement)) {
+    return null
+  }
+  if (event.target.closest('button, input, textarea, select, a')) {
+    return null
+  }
+
+  let caretNode = null
+  let caretOffset = 0
+
+  if (typeof document.caretRangeFromPoint === 'function') {
+    const range = document.caretRangeFromPoint(event.clientX, event.clientY)
+    caretNode = range?.startContainer || null
+    caretOffset = range?.startOffset || 0
+  } else if (typeof document.caretPositionFromPoint === 'function') {
+    const position = document.caretPositionFromPoint(event.clientX, event.clientY)
+    caretNode = position?.offsetNode || null
+    caretOffset = position?.offset || 0
+  }
+
+  if (!caretNode) {
+    return null
+  }
+
+  const segmentEl = getSegmentElement(caretNode)
+  if (!segmentEl) {
+    return null
+  }
+
+  const segmentIdRaw = segmentEl.dataset.segmentId
+  const segmentId = segmentIdRaw != null && segmentIdRaw !== '' ? Number(segmentIdRaw) : null
+  if (!Number.isFinite(segmentId)) {
+    return null
+  }
+
+  const preRange = document.createRange()
+  preRange.selectNodeContents(segmentEl)
+  preRange.setEnd(caretNode, Math.max(caretOffset, 0))
+
+  return {
+    segmentId,
+    contentIndex: preRange.toString().length,
+  }
+}
+
+async function resolveReferences(referenceIds) {
+  const ids = Array.isArray(referenceIds)
+    ? referenceIds.map((id) => Number(id)).filter((id) => Number.isFinite(id))
+    : []
+
+  if (!ids.length || !selectedDocumentId.value) {
+    return []
+  }
+
+  const fetched = await Promise.all(
+    ids.map(async (id) => {
+      if (referenceDetailCache[id]) {
+        return referenceDetailCache[id]
+      }
+      const result = await getReferenceDetail(selectedDocumentId.value, id)
+      const reference = result?.reference || null
+      if (reference) {
+        referenceDetailCache[id] = reference
+      }
+      return reference
+    }),
+  )
+
+  return fetched.filter(Boolean)
+}
+
+async function handleOpenReferencePicker() {
+  if (!selectedDocumentId.value) {
+    setError('請先選擇檔案。')
+    return
+  }
+  if (!selectedPosition.value) {
+    setError('請先在閱讀區選取文字。')
+    return
+  }
+
+  referenceOptionLoading.value = true
+  isReferencePickerVisible.value = true
+  selectedOptionalReferenceId.value = null
+
+  try {
+    const result = await getOptionReferences(selectedDocumentId.value)
+    referenceOptionList.value = Array.isArray(result.references) ? result.references : []
+    referenceOptionList.value.forEach((item) => {
+      if (item?.referenceId != null) {
+        referenceDetailCache[item.referenceId] = item
+      }
+    })
+    if (referenceOptionList.value.length) {
+      selectedOptionalReferenceId.value = referenceOptionList.value[0].referenceId
+    }
+  } catch (error) {
+    setError(error)
+    closeReferencePicker()
+  } finally {
+    referenceOptionLoading.value = false
+  }
+}
+
+async function handleCreateReferenceBinding() {
+  if (!selectedDocumentId.value || !selectedPosition.value) {
+    setError('缺少文件或選取位置。')
+    return
+  }
+  const optionalReferenceId = Number(selectedOptionalReferenceId.value)
+  if (!Number.isFinite(optionalReferenceId)) {
+    setError('請先選擇 Reference。')
+    return
+  }
+
+  const positionPayload = clonePosition(selectedPosition.value)
+  if (!positionPayload) {
+    setError('選取位置無效。')
+    return
+  }
+
+  working.value = true
+  try {
+    const result = await createReferenceBinding(selectedDocumentId.value, positionPayload, optionalReferenceId)
+    upsertReferenceBinding(positionPayload, optionalReferenceId)
+    await fetchReferenceBindingList(selectedDocumentId.value, { silent: true })
+    setSuccess(result?.message || 'Reference 綁定成功')
+    closeReferencePicker()
+  } catch (error) {
+    setError(error)
+  } finally {
+    working.value = false
+  }
+}
+
 function escapeHtml(text) {
   return String(text)
     .replace(/&/g, '&amp;')
@@ -200,6 +452,33 @@ function normalizeRanges(ranges, textLength) {
   return normalized
 }
 
+function getReferenceRanges(segmentId, textLength) {
+  const ranges = []
+
+  referenceBindings.value.forEach((binding) => {
+    const position = clonePosition(binding?.position)
+    if (!position || position.segmentId !== Number(segmentId)) {
+      return
+    }
+
+    const referenceIds = Array.isArray(binding?.referenceIds)
+      ? binding.referenceIds.map((id) => Number(id)).filter((id) => Number.isFinite(id))
+      : []
+
+    if (!referenceIds.length) {
+      return
+    }
+
+    ranges.push({
+      start: position.contentIndex,
+      end: position.contentIndex + position.contentLength,
+      referenceIds,
+    })
+  })
+
+  return normalizeRanges(ranges, textLength)
+}
+
 function getMarkRanges(segmentId, textLength) {
   // 回傳這段文字中所有有效且不重疊的 highlight 與 sticky
   const segmentNotes = notesBySegmentId.value[segmentId] || []
@@ -226,33 +505,61 @@ function getMarkRanges(segmentId, textLength) {
 
   return {
     highlighters: normalizeRanges(highlighters, textLength),
-    stickies: normalizeRanges(stickies, textLength)
+    stickies: normalizeRanges(stickies, textLength),
+    references: getReferenceRanges(segmentId, textLength),
   }
 }
 
-function applyStickiesToText(text, startIndex, stickies) {
+function applyInlineMarksToText(text, startIndex, stickies, references) {
   if (!text) return ''
-  let html = ''
+
   const endIndex = startIndex + text.length
+  const relevantStickies = stickies.filter((s) => s.end > startIndex && s.start < endIndex)
+  const relevantReferences = references.filter((r) => r.end > startIndex && r.start < endIndex)
 
-  const relevantStickies = stickies.filter(s => s.end > startIndex && s.start < endIndex)
+  if (!relevantStickies.length && !relevantReferences.length) {
+    return escapeHtml(text)
+  }
 
-  let textCursor = 0
-  relevantStickies.forEach(sticky => {
-    const sStart = Math.max(startIndex, sticky.start) - startIndex
-    const sEnd = Math.min(endIndex, sticky.end) - startIndex
-
-    if (sStart > textCursor) {
-      html += escapeHtml(text.slice(textCursor, sStart))
-    }
-    const noteIdAttr = sticky.noteId != null ? ` data-note-id="${sticky.noteId}"` : ''
-    html += `<span class="sticky-underline"${noteIdAttr}>${escapeHtml(text.slice(sStart, sEnd))}</span>`
-    textCursor = sEnd
+  const boundaries = new Set([0, text.length])
+  relevantStickies.forEach((sticky) => {
+    boundaries.add(Math.max(startIndex, sticky.start) - startIndex)
+    boundaries.add(Math.min(endIndex, sticky.end) - startIndex)
+  })
+  relevantReferences.forEach((reference) => {
+    boundaries.add(Math.max(startIndex, reference.start) - startIndex)
+    boundaries.add(Math.min(endIndex, reference.end) - startIndex)
   })
 
-  if (textCursor < text.length) {
-    html += escapeHtml(text.slice(textCursor))
+  const sorted = [...boundaries].sort((a, b) => a - b)
+  let html = ''
+
+  for (let i = 0; i < sorted.length - 1; i += 1) {
+    const localStart = sorted[i]
+    const localEnd = sorted[i + 1]
+    if (localEnd <= localStart) {
+      continue
+    }
+
+    const absStart = startIndex + localStart
+    const absEnd = startIndex + localEnd
+    const chunk = escapeHtml(text.slice(localStart, localEnd))
+    const activeSticky = relevantStickies.find((sticky) => absStart >= sticky.start && absEnd <= sticky.end)
+    const activeReference = relevantReferences.find((reference) => absStart >= reference.start && absEnd <= reference.end)
+
+    let wrapped = chunk
+    if (activeReference) {
+      const refIdsAttr = activeReference.referenceIds.join(',')
+      wrapped = `<span class="reference-linked" data-reference-ids="${refIdsAttr}">${wrapped}</span>`
+    }
+    if (activeSticky) {
+      const noteIdAttr = activeSticky.noteId != null ? ` data-note-id="${activeSticky.noteId}"` : ''
+      wrapped = `<span class="sticky-underline"${noteIdAttr}>${wrapped}</span>`
+    }
+
+    html += wrapped
   }
+
   return html
 }
 
@@ -263,9 +570,9 @@ function renderSegmentHtml(segment) {
   }
 
   const segmentId = segment?.segmentId ?? 1
-  const { highlighters, stickies } = getMarkRanges(segmentId, content.length)
+  const { highlighters, stickies, references } = getMarkRanges(segmentId, content.length)
 
-  if (!highlighters.length && !stickies.length) {
+  if (!highlighters.length && !stickies.length && !references.length) {
     return escapeHtml(content)
   }
 
@@ -276,7 +583,7 @@ function renderSegmentHtml(segment) {
   highlighters.forEach((h) => {
     if (h.start > cursor) {
       // 在 highlighter 之前的文字，套用 sticky
-      html += applyStickiesToText(content.slice(cursor, h.start), cursor, stickies)
+      html += applyInlineMarksToText(content.slice(cursor, h.start), cursor, stickies, references)
     }
 
     // 渲染 highlighter 內部
@@ -286,7 +593,7 @@ function renderSegmentHtml(segment) {
       : ''
 
     const innerText = content.slice(h.start, h.end)
-    const innerHtml = applyStickiesToText(innerText, h.start, stickies)
+    const innerHtml = applyInlineMarksToText(innerText, h.start, stickies, references)
 
     html += `<span class="highlight" style="background-color: ${h.color}"${noteIdAttr}>` +
       `${innerHtml}${removeButton}</span>`
@@ -295,7 +602,7 @@ function renderSegmentHtml(segment) {
   })
 
   if (cursor < content.length) {
-    html += applyStickiesToText(content.slice(cursor), cursor, stickies)
+    html += applyInlineMarksToText(content.slice(cursor), cursor, stickies, references)
   }
 
   return html
@@ -409,7 +716,48 @@ function clearSelection() {
   window.getSelection()?.removeAllRanges()
 }
 
-function handleHighlightClick(event) {
+function formatReferenceLabel(reference) {
+  if (!reference) {
+    return 'Reference'
+  }
+  const type = reference.type || 'Reference'
+  const title = reference.title || '未命名'
+  return `${type}：${title}`
+}
+
+async function openReferencePopupByBinding(binding, event) {
+  const references = await resolveReferences(binding?.referenceIds)
+  if (!references.length) {
+    setError('找不到對應的 Reference 內容。')
+    closeReferencePopup()
+    return
+  }
+
+  activeReferenceItems.value = references
+  referencePopupPosition.x = event.clientX
+  referencePopupPosition.y = event.clientY
+  referencePopupVisible.value = true
+}
+
+async function tryOpenReferencePopupFromClick(event) {
+  const point = buildPointFromClick(event)
+  if (!point) {
+    return
+  }
+
+  const binding = findReferenceBindingByPoint(point.segmentId, point.contentIndex)
+  if (!binding) {
+    return
+  }
+
+  try {
+    await openReferencePopupByBinding(binding, event)
+  } catch (error) {
+    setError(error)
+  }
+}
+
+async function handleHighlightClick(event) {
   const target = event.target
   if (!(target instanceof HTMLElement)) {
     return
@@ -424,6 +772,7 @@ function handleHighlightClick(event) {
       handleJumpToStickyNoteById(noteId)
       openStickyNotePanel(noteId)
     }
+    await tryOpenReferencePopupFromClick(event)
     return
   }
   const noteId = Number(target.dataset.noteId)
@@ -494,6 +843,21 @@ async function fetchNoteList(documentId, { silent = false } = {}) {
   } finally {
     if (!silent) {
       noteListLoading.value = false
+    }
+  }
+}
+
+async function fetchReferenceBindingList(documentId, { silent = false } = {}) {
+  if (!documentId) {
+    return
+  }
+
+  try {
+    const result = await getReferenceBindingList(documentId)
+    referenceBindings.value = Array.isArray(result.referenceBindings) ? result.referenceBindings : []
+  } catch (error) {
+    if (!silent) {
+      setError(error)
     }
   }
 }
@@ -816,10 +1180,20 @@ async function loadFromRoute() {
     const result = await readPdf(selectedDocumentId.value)
     pdfSegments.value = Array.isArray(result.segmentList) ? result.segmentList : []
     pdfContent.value = result.content || ''
+    referenceBindings.value = []
+    referenceOptionList.value = []
+    activeReferenceItems.value = []
+    selectedOptionalReferenceId.value = null
+    closeReferencePicker()
+    closeReferencePopup()
+    Object.keys(referenceDetailCache).forEach((key) => {
+      delete referenceDetailCache[key]
+    })
     selectedPosition.value = null
     selectedTextContent.value = ''
     await fetchBookmarkList(selectedDocumentId.value, { silent: true })
     await fetchNoteList(selectedDocumentId.value, { silent: true })
+    await fetchReferenceBindingList(selectedDocumentId.value, { silent: true })
     setSuccess(result.message || 'Read successful.')
   } catch (error) {
     setError(error)
@@ -1025,6 +1399,22 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
+        <section class="reference-panel">
+          <div class="reference-head">
+            <h3>Reference</h3>
+            <button
+              class="primary"
+              type="button"
+              :disabled="working || !selectedPosition || !selectedDocumentId"
+              @click="handleOpenReferencePicker"
+            >
+              建立 Reference
+            </button>
+          </div>
+          <p class="hint" v-if="selectedPosition">已選取段落，可建立 Reference 綁定。</p>
+          <p class="hint" v-else>請先在閱讀區選取一段文字，再建立 Reference。</p>
+        </section>
+
         <section class="note-panel">
           <div class="note-head">
             <h3>Note</h3>
@@ -1096,6 +1486,70 @@ onBeforeUnmount(() => {
           <p v-else class="hint">尚未建立便條 Note。</p>
         </section>
       </aside>
+    </section>
+
+    <section v-if="isReferencePickerVisible" class="reference-picker-overlay" @click.self="closeReferencePicker">
+      <div class="reference-picker-dialog">
+        <div class="reference-picker-head">
+          <h3>選擇要綁定的 Reference</h3>
+          <button class="close-panel-btn" type="button" title="關閉" @click="closeReferencePicker">×</button>
+        </div>
+        <p v-if="referenceOptionLoading" class="hint">讀取可用 Reference 中…</p>
+        <p v-else-if="!referenceOptionList.length" class="hint">目前沒有可綁定的 Reference。</p>
+        <ul v-else class="reference-option-list">
+          <li v-for="reference in referenceOptionList" :key="reference.referenceId" class="reference-option-item">
+            <button
+              class="reference-image-btn"
+              type="button"
+              :class="{ selected: selectedOptionalReferenceId === reference.referenceId }"
+              :title="formatReferenceLabel(reference)"
+              @click="selectedOptionalReferenceId = reference.referenceId"
+            >
+              <img
+                v-if="reference.imageUrl"
+                class="reference-option-image"
+                :src="toImageSrc(reference.imageUrl)"
+                :alt="`${formatReferenceLabel(reference)} 預覽圖`"
+              />
+              <span v-else class="reference-no-image">無圖片</span>
+            </button>
+          </li>
+        </ul>
+        <div class="reference-picker-actions">
+          <button class="secondary" type="button" @click="closeReferencePicker">取消</button>
+          <button
+            class="primary"
+            type="button"
+            :disabled="working || referenceOptionLoading || !selectedOptionalReferenceId"
+            @click="handleCreateReferenceBinding"
+          >
+            綁定
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section
+      v-if="referencePopupVisible"
+      class="reference-popup"
+      :style="{ left: `${referencePopupPosition.x}px`, top: `${referencePopupPosition.y}px` }"
+    >
+      <div class="reference-popup-head">
+        <strong>Reference</strong>
+        <button class="close-panel-btn" type="button" title="關閉" @click="closeReferencePopup">×</button>
+      </div>
+      <ul class="reference-popup-list">
+        <li v-for="item in activeReferenceItems" :key="item.referenceId">
+          <p class="reference-popup-title">{{ formatReferenceLabel(item) }}</p>
+          <p v-if="item.latexCode" class="reference-popup-meta">LaTeX: {{ item.latexCode }}</p>
+          <img
+            v-if="item.imageUrl"
+            class="reference-popup-image"
+            :src="toImageSrc(item.imageUrl)"
+            :alt="`${formatReferenceLabel(item)} 圖片`"
+          />
+        </li>
+      </ul>
     </section>
 
     <section v-if="message" class="notice success">{{ message }}</section>
@@ -1376,6 +1830,27 @@ h1 {
   gap: 1rem;
   align-self: stretch;
   min-width: 0;
+}
+
+.reference-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.8rem 0.9rem;
+  box-shadow: 0 10px 28px rgba(31, 46, 44, 0.06);
+}
+
+.reference-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.45rem;
+}
+
+.reference-head h3 {
+  margin: 0;
+  font-size: 1rem;
 }
 
 .note-panel {
@@ -1685,6 +2160,17 @@ button:disabled {
   transition: all 0.2s ease;
 }
 
+.reader-shell :deep(.reference-linked) {
+  font-weight: 700;
+  cursor: pointer;
+  color: #163f37;
+}
+
+.reader-shell :deep(.reference-linked:hover) {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+}
+
 .reader-shell :deep(.highlight-remove) {
   position: absolute;
   top: -1.4rem;
@@ -1762,6 +2248,155 @@ button:disabled {
   background: #fbe8e8;
   color: #922f2f;
   border: 1px solid #efc5c5;
+}
+
+.reference-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(21, 28, 35, 0.35);
+  display: grid;
+  place-items: center;
+  z-index: 80;
+  padding: 1rem;
+}
+
+.reference-picker-dialog {
+  width: min(560px, 96vw);
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 40px rgba(20, 29, 36, 0.2);
+  padding: 1rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.reference-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.reference-picker-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.reference-option-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.7rem;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.reference-option-item {
+  min-width: 0;
+}
+
+.reference-image-btn {
+  width: 100%;
+  margin: 0;
+  padding: 0.35rem;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background: #f9fbf7;
+  display: grid;
+  place-items: center;
+  transition: border-color 0.2s ease, transform 0.15s ease;
+}
+
+.reference-image-btn.selected {
+  border-color: #225b9a;
+  box-shadow: 0 0 0 3px rgba(34, 91, 154, 0.2);
+}
+
+.reference-image-btn:hover {
+  transform: translateY(-1px);
+}
+
+.reference-option-image {
+  width: 100%;
+  height: 110px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f7faf8;
+}
+
+.reference-no-image {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 110px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.reference-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+.reference-popup {
+  position: fixed;
+  z-index: 90;
+  width: min(340px, 90vw);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 18px 36px rgba(23, 34, 42, 0.22);
+  padding: 0.7rem 0.8rem;
+  transform: translate(-50%, 10px);
+}
+
+.reference-popup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.45rem;
+}
+
+.reference-popup-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.65rem;
+  max-height: 36vh;
+  overflow: auto;
+}
+
+.reference-popup-title {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #264a43;
+}
+
+.reference-popup-meta {
+  margin: 0.25rem 0 0;
+  font-size: 0.83rem;
+  color: var(--ink-soft);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.reference-popup-image {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 0.45rem;
+  background: #f7faf8;
 }
 
 @media (max-width: 1024px) {
