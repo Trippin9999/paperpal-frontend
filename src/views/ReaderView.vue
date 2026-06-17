@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import {
   createReferenceBinding,
+  deleteReferenceBinding,
   createBookmark,
   createNote,
   getOptionReferences,
@@ -16,6 +17,7 @@ import {
   removeBookmark,
   renameBookmark,
   removeNote,
+  sendChatMessage,
   updateNote,
 } from '@/services/pdfManageApi'
 
@@ -64,6 +66,13 @@ const activeReferenceItems = ref([])
 const referencePopupVisible = ref(false)
 const referencePopupPosition = reactive({ x: 0, y: 0 })
 const referenceDetailCache = reactive({})
+const activeReferenceBindingPosition = ref(null)
+const removingReferenceId = ref(null)
+const isChatOpen = ref(false)
+const chatMessages = ref([])
+const chatInput = ref('')
+const chatLoading = ref(false)
+const chatMessagesRef = ref(null)
 let jumpTimer = null
 let syncingFromSource = false
 let syncingFromTranslation = false
@@ -208,6 +217,40 @@ function closeReferencePicker() {
 function closeReferencePopup() {
   referencePopupVisible.value = false
   activeReferenceItems.value = []
+  activeReferenceBindingPosition.value = null
+}
+
+function toggleChat() {
+  isChatOpen.value = !isChatOpen.value
+}
+
+async function handleSendChat() {
+  const text = chatInput.value.trim()
+  if (!text || chatLoading.value) {
+    return
+  }
+
+  chatMessages.value.push({ role: 'user', text })
+  chatInput.value = ''
+  chatLoading.value = true
+
+  await nextTick()
+  if (chatMessagesRef.value) {
+    chatMessagesRef.value.scrollTop = chatMessagesRef.value.scrollHeight
+  }
+
+  try {
+    const result = await sendChatMessage(text)
+    chatMessages.value.push({ role: 'ai', text: result?.reply || '（無回應）' })
+  } catch (error) {
+    chatMessages.value.push({ role: 'ai', text: `錯誤：${error instanceof Error ? error.message : '請求失敗'}` })
+  } finally {
+    chatLoading.value = false
+    await nextTick()
+    if (chatMessagesRef.value) {
+      chatMessagesRef.value.scrollTop = chatMessagesRef.value.scrollHeight
+    }
+  }
 }
 
 function upsertReferenceBinding(position, referenceId) {
@@ -734,9 +777,72 @@ async function openReferencePopupByBinding(binding, event) {
   }
 
   activeReferenceItems.value = references
+  activeReferenceBindingPosition.value = clonePosition(binding?.position)
   referencePopupPosition.x = event.clientX
   referencePopupPosition.y = event.clientY
   referencePopupVisible.value = true
+}
+
+function removeReferenceBindingLocally(position, referenceId) {
+  const key = getPositionKey(position)
+  const normalizedReferenceId = Number(referenceId)
+  if (!key || !Number.isFinite(normalizedReferenceId)) {
+    return
+  }
+
+  referenceBindings.value = referenceBindings.value
+    .map((binding) => {
+      if (getPositionKey(binding?.position) !== key) {
+        return binding
+      }
+
+      const nextReferenceIds = Array.isArray(binding?.referenceIds)
+        ? binding.referenceIds.map((id) => Number(id)).filter((id) => id !== normalizedReferenceId)
+        : []
+
+      return {
+        ...binding,
+        referenceIds: nextReferenceIds,
+      }
+    })
+    .filter((binding) => Array.isArray(binding?.referenceIds) && binding.referenceIds.length)
+}
+
+async function handleRemoveReference(referenceId) {
+  const optionalReferenceId = Number(referenceId)
+  if (!selectedDocumentId.value) {
+    setError('請先選擇檔案。')
+    return
+  }
+  if (!Number.isFinite(optionalReferenceId)) {
+    setError('Reference 資訊無效。')
+    return
+  }
+
+  const positionPayload = clonePosition(activeReferenceBindingPosition.value)
+  if (!positionPayload) {
+    setError('找不到 Reference 綁定位置。')
+    return
+  }
+
+  removingReferenceId.value = optionalReferenceId
+  try {
+    const result = await deleteReferenceBinding(
+      selectedDocumentId.value,
+      positionPayload,
+      optionalReferenceId,
+    )
+    removeReferenceBindingLocally(positionPayload, optionalReferenceId)
+    activeReferenceItems.value = activeReferenceItems.value.filter((item) => item?.referenceId !== optionalReferenceId)
+    if (!activeReferenceItems.value.length) {
+      closeReferencePopup()
+    }
+    setSuccess(result?.message || 'Reference 已移除')
+  } catch (error) {
+    setError(error)
+  } finally {
+    removingReferenceId.value = null
+  }
 }
 
 async function tryOpenReferencePopupFromClick(event) {
@@ -1540,7 +1646,17 @@ onBeforeUnmount(() => {
       </div>
       <ul class="reference-popup-list">
         <li v-for="item in activeReferenceItems" :key="item.referenceId">
-          <p class="reference-popup-title">{{ formatReferenceLabel(item) }}</p>
+          <div class="reference-popup-item-head">
+            <p class="reference-popup-title">{{ formatReferenceLabel(item) }}</p>
+            <button
+              class="reference-remove-btn"
+              type="button"
+              :disabled="removingReferenceId === item.referenceId"
+              @click="handleRemoveReference(item.referenceId)"
+            >
+              {{ removingReferenceId === item.referenceId ? '移除中…' : '移除' }}
+            </button>
+          </div>
           <p v-if="item.latexCode" class="reference-popup-meta">LaTeX: {{ item.latexCode }}</p>
           <img
             v-if="item.imageUrl"
@@ -1554,6 +1670,45 @@ onBeforeUnmount(() => {
 
     <section v-if="message" class="notice success">{{ message }}</section>
     <section v-if="errorMessage" class="notice error">{{ errorMessage }}</section>
+
+    <button class="chat-fab" type="button" @click="toggleChat">
+      聊天
+    </button>
+
+    <section v-if="isChatOpen" class="chat-modal">
+      <div class="chat-head">
+        <strong>Gemini 聊天</strong>
+        <button class="close-panel-btn" type="button" title="關閉" @click="toggleChat">×</button>
+      </div>
+      <div class="chat-body" ref="chatMessagesRef">
+        <p v-if="!chatMessages.length" class="hint">輸入訊息即可詢問 Gemini。</p>
+        <div
+          v-for="(item, idx) in chatMessages"
+          :key="idx"
+          class="chat-bubble"
+          :class="item.role === 'user' ? 'chat-user' : 'chat-ai'"
+        >
+          <span class="chat-role">{{ item.role === 'user' ? '你' : 'Gemini' }}</span>
+          <p>{{ item.text }}</p>
+        </div>
+        <div v-if="chatLoading" class="chat-bubble chat-ai">
+          <span class="chat-role">Gemini</span>
+          <p>思考中...</p>
+        </div>
+      </div>
+      <div class="chat-input-row">
+        <textarea
+          v-model="chatInput"
+          rows="2"
+          class="chat-input"
+          placeholder="輸入你想問 Gemini 的問題..."
+          @keydown.enter.exact.prevent="handleSendChat"
+        ></textarea>
+        <button class="primary" type="button" :disabled="chatLoading || !chatInput.trim()" @click="handleSendChat">
+          送出
+        </button>
+      </div>
+    </section>
   </main>
 </template>
 
@@ -2250,6 +2405,100 @@ button:disabled {
   border: 1px solid #efc5c5;
 }
 
+.chat-fab {
+  position: fixed;
+  right: 1.1rem;
+  bottom: 1.1rem;
+  margin: 0;
+  z-index: 95;
+  border-radius: 999px;
+  padding: 0.65rem 1rem;
+  background: #225b9a;
+  color: #fff;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.22);
+}
+
+.chat-fab:hover {
+  background: #1b4b80;
+}
+
+.chat-modal {
+  position: fixed;
+  right: 1.1rem;
+  bottom: 4.5rem;
+  width: min(360px, calc(100vw - 2rem));
+  height: min(520px, 70vh);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 20px 42px rgba(16, 24, 32, 0.24);
+  z-index: 96;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.6rem 0.75rem;
+}
+
+.chat-body {
+  overflow: auto;
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.7rem 0.75rem;
+  align-content: start;
+}
+
+.chat-bubble {
+  display: grid;
+  gap: 0.2rem;
+  max-width: 86%;
+  border-radius: 10px;
+  padding: 0.48rem 0.62rem;
+}
+
+.chat-bubble p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-user {
+  justify-self: end;
+  background: #e8f1ff;
+  border: 1px solid #c8dafb;
+}
+
+.chat-ai {
+  justify-self: start;
+  background: #f3f5ef;
+  border: 1px solid #dbe3d4;
+}
+
+.chat-role {
+  font-size: 0.74rem;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+.chat-input-row {
+  border-top: 1px solid var(--line);
+  padding: 0.6rem 0.75rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.chat-input {
+  margin: 0;
+  resize: none;
+}
+
 .reference-picker-overlay {
   position: fixed;
   inset: 0;
@@ -2378,6 +2627,25 @@ button:disabled {
   font-size: 0.9rem;
   font-weight: 700;
   color: #264a43;
+}
+
+.reference-popup-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.reference-remove-btn {
+  margin: 0;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  background: #b43636;
+}
+
+.reference-remove-btn:hover:not(:disabled) {
+  background: #982f2f;
 }
 
 .reference-popup-meta {

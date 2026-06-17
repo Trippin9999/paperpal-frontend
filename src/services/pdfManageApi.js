@@ -262,6 +262,24 @@ export async function getTranslation(documentId) {
   return parseResponse(response)
 }
 
+export async function sendChatMessage(content) {
+  const response = await fetch(`${API_BASE_URL}/api/gemini/answer`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ content }),
+  })
+
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const message = data?.reply || data?.message || `Request failed (${response.status})`
+    throw new Error(message)
+  }
+
+  return data
+}
+
 export async function getOptionReferences(documentId) {
   const params = new URLSearchParams({ documentId })
   const response = await fetch(`${API_BASE_URL}/api/reference/getOptionReference?${params.toString()}`)
@@ -306,4 +324,20 @@ export async function getReferenceList(documentId) {
   return {
     referenceBindings: normalizeReferenceBindings(data),
   }
+}
+
+export async function deleteReferenceBinding(documentId, position, optionalReferenceId) {
+  const params = new URLSearchParams({ documentId })
+  const response = await fetch(`${API_BASE_URL}/api/reference/deleteRegerence?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      position,
+      optionalReferenceId,
+    }),
+  })
+
+  return parseResponse(response)
 }
